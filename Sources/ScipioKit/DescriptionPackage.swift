@@ -121,6 +121,7 @@ extension DescriptionPackage {
 struct BuildProduct: Hashable, Sendable {
     var package: ResolvedPackage
     var target: ScipioResolvedModule
+    var containingMacroTargets: Set<BuildProduct> = []
 
     var frameworkName: String {
         "\(target.name.packageNamed()).xcframework"
@@ -174,25 +175,38 @@ private final class BuildProductsResolver {
             return product
         }
 
-        do {
-            products = try topologicalSort(products) { (product) in
-                return product.target.dependencies.flatMap { (dependency) -> [BuildProduct] in
-                    switch dependency {
-                    case .module(let module, conditions: _):
-                        return [resolvedTargetToBuildProduct(module)]
-                    case .product(let product, conditions: _):
-                        return product.modules.map(resolvedTargetToBuildProduct)
+        var macroMap: [BuildProduct: Set<BuildProduct>] = [:]
+        products = try topologicalSort(products) { (product) in
+            var deps = [BuildProduct]()
+            var macros = Set<BuildProduct>()
+            for dependency in product.target.dependencies {
+                switch dependency {
+                case .module(let module, conditions: _):
+                    let depProduct = resolvedTargetToBuildProduct(module)
+                    deps.append(depProduct)
+                    if depProduct.target.type == .macro {
+                        macros.insert(depProduct)
+                        if let depMacros = macroMap[depProduct] {
+                            macros.formUnion(depMacros)
+                        }
+                    }
+                case .product(let productDependency, conditions: _):
+                    for module in productDependency.modules {
+                        let depProduct = resolvedTargetToBuildProduct(module)
+                        deps.append(depProduct)
+                        if depProduct.target.type == .macro {
+                            macros.insert(depProduct)
+                            if let depMacros = macroMap[depProduct] {
+                                macros.formUnion(depMacros)
+                            }
+                        }
                     }
                 }
             }
-        } catch {
-            switch error {
-            case GraphError.unexpectedCycle:
-                throw DescriptionPackage.Error.cycleDetected
-            default:
-                throw error
-            }
+            macroMap[product] = macros
+            return deps
         }
+        products = products.map { var p = $0; p.containingMacroTargets = macroMap[p] ?? []; return p }
 
         return OrderedSet(products.reversed())
     }
@@ -200,15 +214,11 @@ private final class BuildProductsResolver {
     private func targetsToBuild() throws -> [ScipioResolvedModule] {
         switch descriptionPackage.mode {
         case .createPackage:
-            // In create mode, all products should be built
-            // In future update, users will be enable to specify products want to build
             let rootPackage = try fetchRootPackage()
             let productNamesToBuild = rootPackage.manifest.products.map { $0.name }
             let productsToBuild = rootPackage.products.filter { productNamesToBuild.contains($0.name) }
             return productsToBuild.flatMap(\.modules)
         case .prepareDependencies:
-            // In prepare mode, all targets should be built
-            // In future update, users will be enable to specify targets want to build
             return Array(try fetchRootPackage().modules)
         }
     }
@@ -226,11 +236,9 @@ private final class BuildProductsResolver {
 
         switch descriptionPackage.mode {
         case .createPackage:
-            // In create mode, rootTarget should be built
             let rootTargetProducts = try buildProducts(from: rootTarget)
             return rootTargetProducts.union(dependencyProducts)
         case .prepareDependencies:
-            // In prepare mode, rootTarget is just a container. So it should be skipped.
             return dependencyProducts
         }
     }

@@ -15,6 +15,7 @@ struct FrameworkProducer {
     private let outputDir: URL
     private let fileSystem: any FileSystem
     private let toolchainEnvironment: ToolchainEnvironment?
+    private let macroExecutableProducer: MacroExecutableProducer
 
     private var shouldGenerateVersionFile: Bool {
         // cache is not disabled
@@ -47,12 +48,14 @@ struct FrameworkProducer {
         self.outputDir = outputDir
         self.toolchainEnvironment = toolchainEnvironment
         self.fileSystem = fileSystem
+        self.macroExecutableProducer = MacroExecutableProducer(packageLocator: descriptionPackage)
     }
 
     func produce() async throws {
         try await clean()
 
         let targets = try descriptionPackage.resolveBuildProducts()
+
         try await processAllTargets(
             buildProducts: targets.filter { [.library, .binary].contains($0.target.type) }
         )
@@ -310,14 +313,30 @@ struct FrameworkProducer {
 
     private func buildTargets(_ targets: OrderedSet<CacheSystem.CacheTarget>) async -> TargetBuildResult {
         var builtTargets = OrderedSet<CacheSystem.CacheTarget>()
+        var builtMacroTargets = IdentifiableSet<ScipioResolvedModule>()
 
         do {
             for target in targets {
+                let remainingMacroTargetToBuild = target.buildProduct.containingMacroTargets.filter { !builtMacroTargets.contains(id: $0.target.id) }
+                var pluginExecutables = [String: PluginExecutable]()
+
+                if !remainingMacroTargetToBuild.isEmpty {
+                    pluginExecutables.merge(
+                        try await macroExecutableProducer.processAllTargets(buildProducts: target.buildProduct.containingMacroTargets),
+                        uniquingKeysWith: { pluginExecutable, _ in pluginExecutable }
+                    )
+                    logger.info("🚀 Created plugin executables for \(pluginExecutables.map(\.value.compilerOption).joined(separator: ", "))")
+
+                    builtMacroTargets.insert(target.buildProduct.target)
+                }
+
                 try await buildXCFrameworks(
                     target,
                     outputDir: outputDir,
+                    loadPluginExecutable: Set(pluginExecutables.values),
                     buildOptionsMatrix: buildOptionsMatrix
                 )
+
                 builtTargets.append(target)
             }
             return .completed(builtTargets: builtTargets)
@@ -335,6 +354,7 @@ struct FrameworkProducer {
     private func buildXCFrameworks(
         _ target: CacheSystem.CacheTarget,
         outputDir: URL,
+        loadPluginExecutable: Set<PluginExecutable>,
         buildOptionsMatrix: [String: BuildOptions]
     ) async throws -> Set<CacheSystem.CacheTarget> {
         let product = target.buildProduct
@@ -349,6 +369,7 @@ struct FrameworkProducer {
                 toolchainEnvironment: toolchainEnvironment
             )
             try await compiler.createXCFramework(buildProduct: product,
+                                                 loadPluginExecutables: loadPluginExecutable,
                                                  outputDirectory: outputDir,
                                                  overwrite: overwrite)
         case .binary:
