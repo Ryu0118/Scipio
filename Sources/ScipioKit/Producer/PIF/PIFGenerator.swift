@@ -62,7 +62,7 @@ struct PIFGenerator {
         // A constructor of PIFBuilder is concealed. So use JSON is only way to get PIF structs.
         let jsonString = try PIFBuilder.generatePIF(
             buildParameters: buildParameters,
-            packageGraph: descriptionPackage.graph.transformMacroTargetToExecutable(),
+            packageGraph: descriptionPackage.graph.transformMacroTargetsToExecutable(),
             fileSystem: localFileSystem,
             observabilityScope: makeObservabilitySystem().topScope,
             preservePIFModelStructure: true
@@ -341,51 +341,16 @@ extension AbsolutePath {
 }
 
 extension ModulesGraph {
-    func transformMacroTargetToExecutable() throws -> ModulesGraph {
-        try MacroTargetTransformer(graph: self).transformMacroTargetToExecutable()
+    func transformMacroTargetsToExecutable() throws -> ModulesGraph {
+        try MacroTargetTransformer(graph: self).transformMacroTargetsToExecutable()
     }
 }
 
 private struct MacroTargetTransformer {
     let graph: ModulesGraph
 
-    func transformMacroTargetToExecutable() throws -> ModulesGraph {
-        let modifiedPackages = try graph.packages.map { package in
-            let modifiedModules = package.modules.compactMap { transformMacroModuleToExecutable($0, in: package) }
-
-            let modifiedPackages = try package.products.compactMap { product -> ResolvedProduct? in
-                guard product.type == .macro else {
-                    return product
-                }
-
-                let modifiedModules = product.modules.compactMap { transformMacroModuleToExecutable($0, in: package) }
-
-                return try ResolvedProduct(
-                    packageIdentity: product.packageIdentity,
-                    product: Product(
-                        package: package.identity,
-                        name: product.underlying.name,
-                        type: .executable,
-                        modules: modifiedModules.map(\.underlying),
-                        testEntryPointPath: product.underlying.testEntryPointPath
-                    ),
-                    modules: IdentifiableSet(modifiedModules)
-                )
-            }
-
-            package.underlying.modules = modifiedModules.map(\.underlying)
-
-            return ResolvedPackage(
-                underlying: package.underlying,
-                defaultLocalization: package.defaultLocalization,
-                supportedPlatforms: package.supportedPlatforms,
-                dependencies: package.dependencies,
-                modules: IdentifiableSet(modifiedModules),
-                products: modifiedPackages,
-                registryMetadata: package.registryMetadata,
-                platformVersionProvider: PlatformVersionProvider(implementation: .minimumDeploymentTargetDefault)
-            )
-        }
+    func transformMacroTargetsToExecutable() throws -> ModulesGraph {
+        let modifiedPackages = try graph.packages.map { try transformMacroTargetsToExecutable(in: $0) }
 
         return try ModulesGraph(
             rootPackages: graph.rootPackages.map { $0 },
@@ -393,6 +358,48 @@ private struct MacroTargetTransformer {
             packages: IdentifiableSet(modifiedPackages),
             dependencies: graph.requiredDependencies,
             binaryArtifacts: graph.binaryArtifacts
+        )
+    }
+
+    private func transformMacroTargetsToExecutable(in package: ResolvedPackage) throws -> ResolvedPackage {
+        let modifiedModules = package.modules.compactMap { transformMacroModuleToExecutable($0, in: package) }
+
+        let modifiedPackages = try package.products.compactMap { try transformMacroProductToExecutable($0, in: package) }
+
+        package.underlying.modules = modifiedModules.map(\.underlying)
+
+        return ResolvedPackage(
+            underlying: package.underlying,
+            defaultLocalization: package.defaultLocalization,
+            supportedPlatforms: package.supportedPlatforms,
+            dependencies: package.dependencies,
+            modules: IdentifiableSet(modifiedModules),
+            products: modifiedPackages,
+            registryMetadata: package.registryMetadata,
+            platformVersionProvider: PlatformVersionProvider(implementation: .minimumDeploymentTargetDefault)
+        )
+    }
+
+    private func transformMacroProductToExecutable(
+        _ product: ResolvedProduct,
+        in package: ResolvedPackage
+    ) throws -> ResolvedProduct {
+        guard product.type == .macro else {
+            return product
+        }
+
+        let modifiedModules = product.modules.compactMap { transformMacroModuleToExecutable($0, in: package) }
+
+        return try ResolvedProduct(
+            packageIdentity: product.packageIdentity,
+            product: Product(
+                package: package.identity,
+                name: product.underlying.name,
+                type: .executable,
+                modules: modifiedModules.map(\.underlying),
+                testEntryPointPath: product.underlying.testEntryPointPath
+            ),
+            modules: IdentifiableSet(modifiedModules)
         )
     }
 
