@@ -53,7 +53,7 @@ struct FrameworkProducer {
         try await clean()
 
         let buildProductDependencyGraph = try descriptionPackage.resolveBuildProductDependencyGraph()
-            .filter { [.library, .binary].contains($0.target.type) }
+            .filter { [.library, .binary, .macro].contains($0.target.type) }
 
         try await processAllTargets(buildProductDependencyGraph: buildProductDependencyGraph)
     }
@@ -86,6 +86,7 @@ struct FrameworkProducer {
         }
 
         let allTargets = targetGraph.allNodes.map(\.value)
+        let buildProductsUsingMacros = buildProductDependencyGraph.collectBuildProductsUsingMacros()
 
         let pinsStore = try descriptionPackage.workspace.pinsStore.load()
         let cacheSystem = CacheSystem(
@@ -122,7 +123,7 @@ struct FrameworkProducer {
             dependencyGraphToBuild = targetGraph
         }
 
-        let targetBuildResult = await buildTargets(dependencyGraphToBuild)
+        let targetBuildResult = await buildTargets(dependencyGraphToBuild, buildProductsUsingMacros: buildProductsUsingMacros)
 
         let builtTargets: OrderedSet<CacheSystem.CacheTarget> = switch targetBuildResult {
             case .completed(let builtTargets),
@@ -306,19 +307,41 @@ struct FrameworkProducer {
         }
     }
 
-    private func buildTargets(_ targets: DependencyGraph<CacheSystem.CacheTarget>) async -> TargetBuildResult {
+    private func buildTargets(
+        _ targets: DependencyGraph<CacheSystem.CacheTarget>,
+        buildProductsUsingMacros: [BuildProduct: Set<BuildProduct>]
+    ) async -> TargetBuildResult {
         var builtTargets = OrderedSet<CacheSystem.CacheTarget>()
+        var pluginExecutables: [BuildProduct: PluginExecutable] = [:]
 
         do {
             var targets = targets
             while let leafNode = targets.leafs.first {
                 let buildTarget = leafNode.value
-                try await buildXCFrameworks(
-                    buildTarget,
-                    outputDir: outputDir,
-                    buildOptionsMatrix: buildOptionsMatrix
-                )
-                builtTargets.append(buildTarget)
+
+                if buildTarget.buildProduct.target.type == .macro {
+                    let producer = MacroExecutableProducer(
+                        descriptionPackage: descriptionPackage,
+                        xcframeworkOutputDirectory: outputDir,
+                        buildConfiguration: buildTarget.buildOptions.buildConfiguration,
+                        toolchainEnvironment: toolchainEnvironment,
+                        fileSystem: fileSystem
+                    )
+
+                    let pluginExecutable = try await producer.createMacroExecutable(buildTarget, overwrite: overwrite)
+                    pluginExecutables[buildTarget.buildProduct] = pluginExecutable
+                } else {
+                    let shouldLoadPluginExecutables = buildProductsUsingMacros[buildTarget.buildProduct]?.compactMap { pluginExecutables[$0] }
+                    try await buildXCFrameworks(
+                        buildTarget,
+                        outputDir: outputDir,
+                        buildOptionsMatrix: buildOptionsMatrix,
+                        pluginExecutables: shouldLoadPluginExecutables ?? []
+                    )
+
+                    builtTargets.append(buildTarget)
+                }
+
                 targets.remove(buildTarget)
             }
             return .completed(builtTargets: builtTargets)
@@ -336,7 +359,8 @@ struct FrameworkProducer {
     private func buildXCFrameworks(
         _ target: CacheSystem.CacheTarget,
         outputDir: URL,
-        buildOptionsMatrix: [String: BuildOptions]
+        buildOptionsMatrix: [String: BuildOptions],
+        pluginExecutables: [PluginExecutable]
     ) async throws -> Set<CacheSystem.CacheTarget> {
         let product = target.buildProduct
         let buildOptions = target.buildOptions
@@ -351,7 +375,8 @@ struct FrameworkProducer {
             )
             try await compiler.createXCFramework(buildProduct: product,
                                                  outputDirectory: outputDir,
-                                                 overwrite: overwrite)
+                                                 overwrite: overwrite,
+                                                 pluginExecutables: pluginExecutables)
         case .binary:
             guard let binaryTarget = product.target.underlying as? BinaryModule else {
                 fatalError("Unexpected failure")
@@ -395,3 +420,19 @@ extension [Runner.Options.CachePolicy] {
         }
     }
 }
+
+extension DependencyGraph<BuildProduct> {
+    /// Returns a mapping from each build product that depends on macros to the set of macro build products it depends on.
+    func collectBuildProductsUsingMacros() -> [BuildProduct: Set<BuildProduct>] {
+        rootNodes.reduce(into: [BuildProduct: Set<BuildProduct>]()) { partialResult, node in
+            node.children.forEach { child in
+                if child.value.target.type == .macro {
+                    child.parents.compactMap(\.reference?.value).forEach { macroDependedTarget in
+                        partialResult[macroDependedTarget, default: []].insert(child.value)
+                    }
+                }
+            }
+        }
+    }
+}
+
