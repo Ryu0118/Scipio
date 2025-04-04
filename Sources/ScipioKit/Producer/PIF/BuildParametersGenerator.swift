@@ -36,7 +36,12 @@ struct BuildParametersGenerator {
         self.fileSystem = fileSystem
     }
 
-    func generate(for sdk: SDK, buildParameters: BuildParameters, destinationDir: TSCAbsolutePath) throws -> TSCAbsolutePath {
+    func generate(
+        for sdk: SDK,
+        buildParameters: BuildParameters,
+        destinationDir: TSCAbsolutePath,
+        pluginExecutables: [PluginExecutable]
+    ) throws -> TSCAbsolutePath {
         let targetArchitecture = buildParameters.triple.arch?.rawValue ?? "arm64"
 
         // Generate the run destination parameters.
@@ -68,7 +73,8 @@ struct BuildParametersGenerator {
         )
         settings["OTHER_SWIFT_FLAGS"] = expandFlags(
             buildParameters.toolchain.extraFlags.swiftCompilerFlags,
-            buildParameters.flags.swiftCompilerFlags.map { $0.spm_shellEscaped() }
+            buildParameters.flags.swiftCompilerFlags.map { $0.spm_shellEscaped() },
+            pluginExecutables.flatMap { ["-load-plugin-executable", $0.compilerOption] }
         )
         settings["OTHER_LDFLAGS"] = expandFlags(
             buildParameters.flags.linkerFlags.map { $0.spm_shellEscaped() }

@@ -94,6 +94,36 @@ struct XCBuildClient {
         return frameworkBundlePath
     }
 
+    func buildMacroTarget(
+        pifPath: TSCAbsolutePath,
+        buildParametersPath: TSCAbsolutePath,
+        outputPath: TSCAbsolutePath
+    ) async throws -> TSCAbsolutePath {
+        let xcbuildPath = try await fetchXCBuildPath()
+
+        let executor = XCBuildExecutor(xcbuildPath: xcbuildPath)
+
+        try await executor.build(
+            pifPath: pifPath,
+            configuration: configuration,
+            derivedDataPath: packageLocator.derivedDataPath,
+            buildParametersPath: buildParametersPath,
+            targetName: productTargetName
+        )
+
+        let fromExecutablePath = packageLocator.productsDirectory(
+            buildConfiguration: buildOptions.buildConfiguration,
+            sdk: .macOS
+        ).appending(component: buildProduct.target.name)
+
+        let toExecutablePath = outputPath.appending(component: buildProduct.target.name)
+
+        try fileSystem.createDirectory(outputPath)
+        try fileSystem.copy(from: fromExecutablePath, to: toExecutablePath)
+
+        return toExecutablePath
+    }
+
     /// Assemble framework from build artifacts
     /// - Parameter sdk: SDK
     /// - Returns: Path to assembled framework bundle
