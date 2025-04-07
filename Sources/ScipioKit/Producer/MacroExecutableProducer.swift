@@ -3,20 +3,20 @@ import Basics
 
 struct MacroExecutableProducer {
     private let descriptionPackage: DescriptionPackage
-    private let xcframeworkOutputDirectory: URL
+    private let outputDir: URL
     private let buildConfiguration: BuildConfiguration
     private let toolchainEnvironment: ToolchainEnvironment?
     private let fileSystem: any FileSystem
 
     init(
         descriptionPackage: DescriptionPackage,
-        xcframeworkOutputDirectory: URL,
+        outputDir: URL,
         buildConfiguration: BuildConfiguration,
         toolchainEnvironment: ToolchainEnvironment?,
         fileSystem: some FileSystem
     ) {
         self.descriptionPackage = descriptionPackage
-        self.xcframeworkOutputDirectory = xcframeworkOutputDirectory
+        self.outputDir = outputDir
         self.buildConfiguration = buildConfiguration
         self.toolchainEnvironment = toolchainEnvironment
         self.fileSystem = fileSystem
@@ -44,13 +44,11 @@ struct MacroExecutableProducer {
             toolchainEnvironment: toolchainEnvironment
         )
 
-        let outputDirectory = xcframeworkOutputDirectory.appending(component: "Plugins")
-
         logger.info("📦 Building macro target \(target.buildProduct.target.name)")
 
         let executablePath = try await compiler.createMacroExecutable(
             buildProduct: target.buildProduct,
-            outputDirectory: outputDirectory,
+            outputDirectory: outputDir,
             overwrite: overwrite
         )
 

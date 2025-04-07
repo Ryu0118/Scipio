@@ -123,6 +123,14 @@ struct BuildProduct: Hashable, Sendable {
         "\(target.name.packageNamed()).xcframework"
     }
 
+    var artifactName: String {
+        if target.type == .macro {
+            target.name
+        } else {
+            frameworkName
+        }
+    }
+
     var binaryTarget: ScipioBinaryModule? {
         target.underlying as? ScipioBinaryModule
     }
