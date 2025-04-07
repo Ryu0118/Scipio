@@ -108,7 +108,8 @@ public struct SwiftPMCacheKey: CacheKey {
 struct CacheSystem: Sendable {
     static let defaultParalellNumber = 8
     private let pinsStore: PinsStore
-    private let outputDirectory: URL
+    private let xcframeworkOutputDir: URL
+    private let pluginExecutableOutputDir: URL
     private let fileSystem: any FileSystem
 
     struct CacheTarget: Hashable, Sendable {
@@ -138,11 +139,13 @@ struct CacheSystem: Sendable {
 
     init(
         pinsStore: PinsStore,
-        outputDirectory: URL,
+        xcframeworkOutputDir: URL,
+        pluginExecutableOutputDir: URL,
         fileSystem: any FileSystem = localFileSystem
     ) {
         self.pinsStore = pinsStore
-        self.outputDirectory = outputDirectory
+        self.xcframeworkOutputDir = xcframeworkOutputDir
+        self.pluginExecutableOutputDir = pluginExecutableOutputDir
         self.fileSystem = fileSystem
     }
 
@@ -159,9 +162,9 @@ struct CacheSystem: Sendable {
         for chunk in chunked {
             await withTaskGroup(of: Void.self) { group in
                 for target in chunk {
-                    let frameworkName = target.buildProduct.frameworkName
+                    let frameworkName = target.buildProduct.artifactName
                     group.addTask {
-                        let frameworkPath = outputDirectory.appendingPathComponent(frameworkName)
+                        let frameworkPath = xcframeworkOutputDir.appendingPathComponent(frameworkName)
                         do {
                             logger.info(
                                 "🚀 Cache \(frameworkName) to cache storage: \(storageName)",
@@ -188,16 +191,16 @@ struct CacheSystem: Sendable {
         let cacheKey = try await calculateCacheKey(of: target)
 
         let data = try jsonEncoder.encode(cacheKey)
-        let versionFilePath = outputDirectory.appendingPathComponent(versionFileName(for: target.buildProduct.target.name))
+        let versionFilePath = versionFilePath(for: target.buildProduct.target.name, targetType: target.buildProduct.target.type)
         try fileSystem.writeFileContents(
             versionFilePath.absolutePath.spmAbsolutePath,
             data: data
         )
     }
 
-    func existsValidCache(cacheKey: SwiftPMCacheKey) async -> Bool {
+    func existsValidCache(cacheKey: SwiftPMCacheKey, targetType: Module.Kind) async -> Bool {
         do {
-            let versionFilePath = versionFilePath(for: cacheKey.targetName)
+            let versionFilePath = versionFilePath(for: cacheKey.targetName, targetType: targetType)
             guard fileSystem.exists(versionFilePath.absolutePath) else { return false }
             let decoder = JSONDecoder()
             guard let contents = try? fileSystem.readFileContents(versionFilePath.absolutePath).contents else {
@@ -220,7 +223,7 @@ struct CacheSystem: Sendable {
         do {
             let cacheKey = try await calculateCacheKey(of: target)
             if try await storage.existsValidCache(for: cacheKey) {
-                try await storage.fetchArtifacts(for: cacheKey, to: outputDirectory)
+                try await storage.fetchArtifacts(for: cacheKey, to: resolveOutputDir(for: target.buildProduct.target.type))
                 return .succeeded
             } else {
                 return .noCache
@@ -268,8 +271,16 @@ struct CacheSystem: Sendable {
         return pin
     }
 
-    private func versionFilePath(for targetName: String) -> URL {
-        outputDirectory.appendingPathComponent(versionFileName(for: targetName))
+    private func versionFilePath(for targetName: String, targetType: Module.Kind) -> URL {
+        resolveOutputDir(for: targetType).appendingPathComponent(versionFileName(for: targetName))
+    }
+
+    private func resolveOutputDir(for targetType: Module.Kind) -> URL {
+        if case .macro = targetType {
+            pluginExecutableOutputDir
+        } else {
+            xcframeworkOutputDir
+        }
     }
 
     private func versionFileName(for targetName: String) -> String {

@@ -16,6 +16,22 @@ struct XCBuildExecutor {
         buildParametersPath: TSCAbsolutePath,
         target: ScipioResolvedModule
     ) async throws {
+        try await build(
+            pifPath: pifPath,
+            configuration: configuration,
+            derivedDataPath: derivedDataPath,
+            buildParametersPath: buildParametersPath,
+            targetName: target.name
+        )
+    }
+
+    func build(
+        pifPath: TSCAbsolutePath,
+        configuration: BuildConfiguration,
+        derivedDataPath: TSCAbsolutePath,
+        buildParametersPath: TSCAbsolutePath,
+        targetName: String
+    ) async throws {
         let executor = _Executor(args: [
             xcbuildPath.path(percentEncoded: false),
             "build",
@@ -27,7 +43,7 @@ struct XCBuildExecutor {
             "--buildParametersFile",
             buildParametersPath.pathString,
             "--target",
-            target.name,
+            targetName
         ])
         try await executor.run()
     }

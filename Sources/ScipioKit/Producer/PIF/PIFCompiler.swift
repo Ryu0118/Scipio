@@ -14,6 +14,10 @@ struct PIFCompiler: Compiler {
 
     private let buildParametersGenerator: BuildParametersGenerator
 
+    private var packageLocator: some PackageLocator {
+        descriptionPackage
+    }
+
     init(
         descriptionPackage: DescriptionPackage,
         buildOptions: BuildOptions,
@@ -45,7 +49,12 @@ struct PIFCompiler: Compiler {
         return try await toolchainGenerator.makeToolChain(sdk: sdk)
     }
 
-    func createXCFramework(buildProduct: BuildProduct, outputDirectory: URL, overwrite: Bool) async throws {
+    func createXCFramework(
+        buildProduct: BuildProduct,
+        outputDirectory: URL,
+        overwrite: Bool,
+        pluginExecutables: [PluginExecutable]
+    ) async throws {
         let sdks = buildOptions.sdks
         let sdkNames = sdks.map(\.displayName).joined(separator: ", ")
         let target = buildProduct.target
@@ -72,11 +81,12 @@ struct PIFCompiler: Compiler {
                 buildOptions: buildOptions,
                 buildOptionsMatrix: buildOptionsMatrix
             )
-            let pifPath = try generator.generateJSON(for: sdk)
+            let pifPath = try generator.generateJSONForLibrary(for: sdk)
             let buildParametersPath = try buildParametersGenerator.generate(
                 for: sdk,
                 buildParameters: buildParameters,
-                destinationDir: descriptionPackage.workspaceDirectory
+                destinationDir: descriptionPackage.workspaceDirectory,
+                pluginExecutables: pluginExecutables
             )
 
             do {
@@ -124,9 +134,54 @@ struct PIFCompiler: Compiler {
         )
     }
 
-    private func makeBuildParameters(toolchain: UserToolchain) throws -> BuildParameters {
+    func createMacroExecutable(
+        buildProduct: BuildProduct,
+        outputDirectory: URL,
+        overwrite: Bool
+    ) async throws -> TSCAbsolutePath {
+        let xcBuildClient: XCBuildClient = .init(
+            buildProduct: buildProduct,
+            buildOptions: buildOptions,
+            configuration: buildOptions.buildConfiguration,
+            packageLocator: descriptionPackage
+        )
+
+        let toolchain = try await makeToolchain(for: .macOS)
+        let buildParameters = try makeBuildParameters(toolchain: toolchain, destination: .target)
+
+        let generator = try PIFGenerator(
+            package: descriptionPackage,
+            buildParameters: buildParameters,
+            buildOptions: buildOptions,
+            buildOptionsMatrix: [:]
+        )
+        let pifPath = try generator.generateJSONForMacro()
+
+        let buildParametersPath = try buildParametersGenerator.generate(
+            for: .macOS,
+            buildParameters: buildParameters,
+            destinationDir: descriptionPackage.workspaceDirectory,
+            pluginExecutables: []
+        )
+
+        do {
+            let outputExecutablePath = try await xcBuildClient.buildMacroTarget(
+                pifPath: pifPath,
+                buildParametersPath: buildParametersPath,
+                outputPath: TSCAbsolutePath(validating: outputDirectory.path)
+            )
+
+            return outputExecutablePath
+        } catch {
+            logger.error("Unable to build", metadata: .color(.red))
+
+            throw error
+        }
+    }
+    
+    private func makeBuildParameters(toolchain: UserToolchain, destination: BuildParameters.Destination = .target) throws -> BuildParameters {
         try .init(
-            destination: .target,
+            destination: destination,
             dataPath: descriptionPackage.buildDirectory.spmAbsolutePath,
             configuration: buildOptions.buildConfiguration.spmConfiguration,
             toolchain: toolchain,

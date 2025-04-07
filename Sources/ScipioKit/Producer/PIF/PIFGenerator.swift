@@ -1,7 +1,7 @@
 import Foundation
 import Basics
 import SPMBuildCore
-import PackageModel
+@_spi(SwiftPMInternal) import PackageModel
 import PackageGraph
 import XCBuildSupport
 
@@ -44,7 +44,7 @@ struct PIFGenerator {
         self.fileSystem = fileSystem
     }
 
-    private func generatePIF() throws -> PIF.TopLevelObject {
+    private func generatePIFForLibrary() throws -> PIF.TopLevelObject {
         // A constructor of PIFBuilder is concealed. So use JSON is only way to get PIF structs.
         let jsonString = try PIFBuilder.generatePIF(
             buildParameters: buildParameters,
@@ -58,8 +58,22 @@ struct PIFGenerator {
         return try jsonDecoder.decode(PIF.TopLevelObject.self, from: data)
     }
 
-    func generateJSON(for sdk: SDK) throws -> TSCAbsolutePath {
-        let topLevelObject = modify(try generatePIF(), for: sdk)
+    private func generatePIFForMacro() throws -> PIF.TopLevelObject {
+        // A constructor of PIFBuilder is concealed. So use JSON is only way to get PIF structs.
+        let jsonString = try PIFBuilder.generatePIF(
+            buildParameters: buildParameters,
+            packageGraph: descriptionPackage.graph.transformMacroTargetsToExecutable(),
+            fileSystem: localFileSystem,
+            observabilityScope: makeObservabilitySystem().topScope,
+            preservePIFModelStructure: true
+        )
+        let data = jsonString.data(using: .utf8)!
+        let jsonDecoder = JSONDecoder.makeWithDefaults()
+        return try jsonDecoder.decode(PIF.TopLevelObject.self, from: data)
+    }
+
+    func generateJSONForLibrary(for sdk: SDK) throws -> TSCAbsolutePath {
+        let topLevelObject = modify(try generatePIFForLibrary(), for: sdk)
 
         try PIF.sign(topLevelObject.workspace)
         let encoder = JSONEncoder.makeWithDefaults()
@@ -68,6 +82,20 @@ struct PIFGenerator {
         let newJSONData = try encoder.encode(topLevelObject)
         let path = descriptionPackage.workspaceDirectory
             .appending(component: "manifest-\(descriptionPackage.name)-\(sdk.settingValue).pif")
+        try fileSystem.writeFileContents(path.spmAbsolutePath, data: newJSONData)
+        return path
+    }
+
+    func generateJSONForMacro() throws -> TSCAbsolutePath {
+        let topLevelObject = try generatePIFForMacro()
+
+        try PIF.sign(topLevelObject.workspace)
+        let encoder = JSONEncoder.makeWithDefaults()
+        encoder.userInfo[.encodeForXCBuild] = true
+
+        let newJSONData = try encoder.encode(topLevelObject)
+        let path = descriptionPackage.workspaceDirectory
+            .appending(component: "manifest-\(descriptionPackage.name)-macro.pif")
         try fileSystem.writeFileContents(path.spmAbsolutePath, data: newJSONData)
         return path
     }
@@ -309,5 +337,104 @@ extension PIF.TopLevelObject: @retroactive Decodable {
 extension AbsolutePath {
     fileprivate var moduleEscapedPathString: String {
         return self.pathString.replacingOccurrences(of: "\\", with: "\\\\")
+    }
+}
+
+extension ModulesGraph {
+    func transformMacroTargetsToExecutable() throws -> ModulesGraph {
+        try MacroTargetTransformer(graph: self).transformMacroTargetsToExecutable()
+    }
+}
+
+private struct MacroTargetTransformer {
+    let graph: ModulesGraph
+
+    func transformMacroTargetsToExecutable() throws -> ModulesGraph {
+        let modifiedPackages = try graph.packages.map { try transformMacroTargetsToExecutable(in: $0) }
+
+        return try ModulesGraph(
+            rootPackages: graph.rootPackages.map { $0 },
+            rootDependencies: graph.inputPackages,
+            packages: IdentifiableSet(modifiedPackages),
+            dependencies: graph.requiredDependencies,
+            binaryArtifacts: graph.binaryArtifacts
+        )
+    }
+
+    private func transformMacroTargetsToExecutable(in package: ResolvedPackage) throws -> ResolvedPackage {
+        let modifiedModules = package.modules.compactMap { transformMacroModuleToExecutable($0, in: package) }
+
+        let modifiedPackages = try package.products.compactMap { try transformMacroProductToExecutable($0, in: package) }
+
+        package.underlying.modules = modifiedModules.map(\.underlying)
+
+        return ResolvedPackage(
+            underlying: package.underlying,
+            defaultLocalization: package.defaultLocalization,
+            supportedPlatforms: package.supportedPlatforms,
+            dependencies: package.dependencies,
+            modules: IdentifiableSet(modifiedModules),
+            products: modifiedPackages,
+            registryMetadata: package.registryMetadata,
+            platformVersionProvider: PlatformVersionProvider(implementation: .minimumDeploymentTargetDefault)
+        )
+    }
+
+    private func transformMacroProductToExecutable(
+        _ product: ResolvedProduct,
+        in package: ResolvedPackage
+    ) throws -> ResolvedProduct {
+        guard product.type == .macro else {
+            return product
+        }
+
+        let modifiedModules = product.modules.compactMap { transformMacroModuleToExecutable($0, in: package) }
+
+        return try ResolvedProduct(
+            packageIdentity: product.packageIdentity,
+            product: Product(
+                package: package.identity,
+                name: product.underlying.name,
+                type: .executable,
+                modules: modifiedModules.map(\.underlying),
+                testEntryPointPath: product.underlying.testEntryPointPath
+            ),
+            modules: IdentifiableSet(modifiedModules)
+        )
+    }
+
+    private func transformMacroModuleToExecutable(
+        _ module: ScipioResolvedModule,
+        in package: ResolvedPackage
+    ) -> ScipioResolvedModule {
+        guard module.type == .macro else {
+            return module
+        }
+
+        let underlying = module.underlying as? SwiftModule
+
+        return ScipioResolvedModule(
+            packageIdentity: package.identity,
+            underlying: SwiftModule(
+                name: module.name,
+                potentialBundleName: module.underlying.potentialBundleName,
+                type: .executable,
+                path: module.underlying.path,
+                sources: module.underlying.sources,
+                resources: module.underlying.resources,
+                ignored: module.underlying.ignored,
+                others: module.underlying.others,
+                dependencies: module.underlying.dependencies,
+                packageAccess: module.underlying.packageAccess,
+                declaredSwiftVersions: underlying!.declaredSwiftVersions,
+                buildSettings: module.underlying.buildSettings,
+                buildSettingsDescription: module.underlying.buildSettingsDescription,
+                pluginUsages: module.underlying.pluginUsages,
+                usesUnsafeFlags: module.underlying.usesUnsafeFlags
+            ),
+            dependencies: module.dependencies,
+            supportedPlatforms: module.supportedPlatforms.filter { $0.platform == .macOS },
+            platformVersionProvider: .init(implementation: .minimumDeploymentTargetDefault)
+        )
     }
 }

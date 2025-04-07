@@ -12,7 +12,8 @@ struct FrameworkProducer {
     private let buildOptionsMatrix: [String: BuildOptions]
     private let cachePolicies: [Runner.Options.CachePolicy]
     private let overwrite: Bool
-    private let outputDir: URL
+    private let xcframeworkOutputDir: URL
+    private let pluginExecutableOutputDir: URL
     private let fileSystem: any FileSystem
     private let toolchainEnvironment: ToolchainEnvironment?
 
@@ -35,7 +36,8 @@ struct FrameworkProducer {
         buildOptionsMatrix: [String: BuildOptions],
         cachePolicies: [Runner.Options.CachePolicy],
         overwrite: Bool,
-        outputDir: URL,
+        xcframeworkOutputDir: URL,
+        pluginExecutableOutputDir: URL,
         toolchainEnvironment: ToolchainEnvironment? = nil,
         fileSystem: any FileSystem = localFileSystem
     ) {
@@ -44,7 +46,8 @@ struct FrameworkProducer {
         self.buildOptionsMatrix = buildOptionsMatrix
         self.cachePolicies = cachePolicies
         self.overwrite = overwrite
-        self.outputDir = outputDir
+        self.xcframeworkOutputDir = xcframeworkOutputDir
+        self.pluginExecutableOutputDir = pluginExecutableOutputDir
         self.toolchainEnvironment = toolchainEnvironment
         self.fileSystem = fileSystem
     }
@@ -53,7 +56,7 @@ struct FrameworkProducer {
         try await clean()
 
         let buildProductDependencyGraph = try descriptionPackage.resolveBuildProductDependencyGraph()
-            .filter { [.library, .binary].contains($0.target.type) }
+            .filter { [.library, .binary, .macro].contains($0.target.type) }
 
         try await processAllTargets(buildProductDependencyGraph: buildProductDependencyGraph)
     }
@@ -86,11 +89,13 @@ struct FrameworkProducer {
         }
 
         let allTargets = targetGraph.allNodes.map(\.value)
+        let buildProductsUsingMacros = buildProductDependencyGraph.collectBuildProductsUsingMacros()
 
         let pinsStore = try descriptionPackage.workspace.pinsStore.load()
         let cacheSystem = CacheSystem(
             pinsStore: pinsStore,
-            outputDirectory: outputDir
+            xcframeworkOutputDir: xcframeworkOutputDir,
+            pluginExecutableOutputDir: pluginExecutableOutputDir
         )
 
         let dependencyGraphToBuild: DependencyGraph<CacheSystem.CacheTarget>
@@ -122,7 +127,7 @@ struct FrameworkProducer {
             dependencyGraphToBuild = targetGraph
         }
 
-        let targetBuildResult = await buildTargets(dependencyGraphToBuild)
+        let targetBuildResult = await buildTargets(dependencyGraphToBuild, buildProductsUsingMacros: buildProductsUsingMacros)
 
         let builtTargets: OrderedSet<CacheSystem.CacheTarget> = switch targetBuildResult {
             case .completed(let builtTargets),
@@ -154,16 +159,22 @@ struct FrameworkProducer {
         for chunk in chunked {
             await withTaskGroup(of: CacheSystem.CacheTarget?.self) { group in
                 for target in chunk {
-                    group.addTask { [outputDir, fileSystem] in
+                    group.addTask { [xcframeworkOutputDir, pluginExecutableOutputDir, fileSystem] () -> CacheSystem.CacheTarget? in
                         do {
                             let product = target.buildProduct
-                            let frameworkName = product.frameworkName
-                            let outputPath = outputDir.appendingPathComponent(frameworkName)
+                            let frameworkName = product.artifactName
+
+                            let outputPath = if product.target.type == .macro {
+                                pluginExecutableOutputDir.appendingPathComponent(product.target.name)
+                            } else {
+                                xcframeworkOutputDir.appendingPathComponent(frameworkName)
+                            }
+
                             let exists = fileSystem.exists(outputPath.absolutePath)
                             guard exists else { return nil }
 
                             let expectedCacheKey = try await cacheSystem.calculateCacheKey(of: target)
-                            let isValidCache = await cacheSystem.existsValidCache(cacheKey: expectedCacheKey)
+                            let isValidCache = await cacheSystem.existsValidCache(cacheKey: expectedCacheKey, targetType: product.target.type)
                             guard isValidCache else {
                                 logger.warning("⚠️ Existing \(frameworkName) is outdated.", metadata: .color(.yellow))
                                 logger.info("🗑️ Delete \(frameworkName)", metadata: .color(.red))
@@ -247,7 +258,7 @@ struct FrameworkProducer {
 
         var restored: Set<CacheSystem.CacheTarget> = []
         for chunk in chunked {
-            let restorer = Restorer(outputDir: outputDir, fileSystem: fileSystem)
+            let restorer = Restorer(fileSystem: fileSystem)
             await withTaskGroup(of: CacheSystem.CacheTarget?.self) { group in
                 for target in chunk {
                     group.addTask {
@@ -273,7 +284,6 @@ struct FrameworkProducer {
 
     /// Sendable interface to provide restore caches
     private struct Restorer: Sendable {
-        let outputDir: URL
         let fileSystem: any FileSystem
 
         // Return true if pre-built artifact is available (already existing or restored from cache)
@@ -283,7 +293,7 @@ struct FrameworkProducer {
             cacheStorage: any CacheStorage
         ) async throws -> Bool {
             let product = target.buildProduct
-            let frameworkName = product.frameworkName
+            let artifactName = product.artifactName
 
             let expectedCacheKey = try await cacheSystem.calculateCacheKey(of: target)
             let expectedCacheKeyHash = try expectedCacheKey.calculateChecksum()
@@ -291,34 +301,56 @@ struct FrameworkProducer {
             let restoreResult = await cacheSystem.restoreCacheIfPossible(target: target, storage: cacheStorage)
             switch restoreResult {
             case .succeeded:
-                logger.info("✅ Restore \(frameworkName) (\(expectedCacheKeyHash)) from cache storage.", metadata: .color(.green))
+                logger.info("✅ Restore \(artifactName) (\(expectedCacheKeyHash)) from cache storage.", metadata: .color(.green))
                 return true
             case .failed(let error):
-                logger.warning("⚠️ Restoring \(frameworkName) (\(expectedCacheKeyHash)) is failed", metadata: .color(.yellow))
+                logger.warning("⚠️ Restoring \(artifactName) (\(expectedCacheKeyHash)) is failed", metadata: .color(.yellow))
                 if let description = error?.errorDescription {
                     logger.warning("\(description)", metadata: .color(.yellow))
                 }
                 return false
             case .noCache:
-                logger.info("ℹ️ Cache not found for \(frameworkName) (\(expectedCacheKeyHash)) from cache storage.", metadata: .color(.green))
+                logger.info("ℹ️ Cache not found for \(artifactName) (\(expectedCacheKeyHash)) from cache storage.", metadata: .color(.green))
                 return false
             }
         }
     }
 
-    private func buildTargets(_ targets: DependencyGraph<CacheSystem.CacheTarget>) async -> TargetBuildResult {
+    private func buildTargets(
+        _ targets: DependencyGraph<CacheSystem.CacheTarget>,
+        buildProductsUsingMacros: [BuildProduct: Set<BuildProduct>]
+    ) async -> TargetBuildResult {
         var builtTargets = OrderedSet<CacheSystem.CacheTarget>()
+        var pluginExecutables: [BuildProduct: PluginExecutable] = [:]
 
         do {
             var targets = targets
             while let leafNode = targets.leafs.first {
                 let buildTarget = leafNode.value
-                try await buildXCFrameworks(
-                    buildTarget,
-                    outputDir: outputDir,
-                    buildOptionsMatrix: buildOptionsMatrix
-                )
-                builtTargets.append(buildTarget)
+
+                if buildTarget.buildProduct.target.type == .macro {
+                    let producer = MacroExecutableProducer(
+                        descriptionPackage: descriptionPackage,
+                        outputDir: pluginExecutableOutputDir,
+                        buildConfiguration: buildTarget.buildOptions.buildConfiguration,
+                        toolchainEnvironment: toolchainEnvironment,
+                        fileSystem: fileSystem
+                    )
+
+                    let pluginExecutable = try await producer.createMacroExecutable(buildTarget, overwrite: overwrite)
+                    pluginExecutables[buildTarget.buildProduct] = pluginExecutable
+                } else {
+                    let shouldLoadPluginExecutables = buildProductsUsingMacros[buildTarget.buildProduct]?.compactMap { pluginExecutables[$0] }
+                    try await buildXCFrameworks(
+                        buildTarget,
+                        outputDir: xcframeworkOutputDir,
+                        buildOptionsMatrix: buildOptionsMatrix,
+                        pluginExecutables: shouldLoadPluginExecutables ?? []
+                    )
+
+                    builtTargets.append(buildTarget)
+                }
+
                 targets.remove(buildTarget)
             }
             return .completed(builtTargets: builtTargets)
@@ -336,7 +368,8 @@ struct FrameworkProducer {
     private func buildXCFrameworks(
         _ target: CacheSystem.CacheTarget,
         outputDir: URL,
-        buildOptionsMatrix: [String: BuildOptions]
+        buildOptionsMatrix: [String: BuildOptions],
+        pluginExecutables: [PluginExecutable]
     ) async throws -> Set<CacheSystem.CacheTarget> {
         let product = target.buildProduct
         let buildOptions = target.buildOptions
@@ -351,7 +384,8 @@ struct FrameworkProducer {
             )
             try await compiler.createXCFramework(buildProduct: product,
                                                  outputDirectory: outputDir,
-                                                 overwrite: overwrite)
+                                                 overwrite: overwrite,
+                                                 pluginExecutables: pluginExecutables)
         case .binary:
             guard let binaryTarget = product.target.underlying as? BinaryModule else {
                 fatalError("Unexpected failure")
@@ -395,3 +429,19 @@ extension [Runner.Options.CachePolicy] {
         }
     }
 }
+
+extension DependencyGraph<BuildProduct> {
+    /// Returns a mapping from each build product that depends on macros to the set of macro build products it depends on.
+    func collectBuildProductsUsingMacros() -> [BuildProduct: Set<BuildProduct>] {
+        rootNodes.reduce(into: [BuildProduct: Set<BuildProduct>]()) { partialResult, node in
+            node.children.forEach { child in
+                if child.value.target.type == .macro {
+                    child.parents.compactMap(\.reference?.value).forEach { macroDependedTarget in
+                        partialResult[macroDependedTarget, default: []].insert(child.value)
+                    }
+                }
+            }
+        }
+    }
+}
+

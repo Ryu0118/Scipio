@@ -54,13 +54,15 @@ public struct Runner {
         case `default`
         case custom(URL)
 
-        fileprivate func resolve(packageDirectory: URL) -> URL {
-            switch self {
+        fileprivate func resolve(packageDirectory: URL) -> (xcframeworkOutputDir: URL, pluginExecutableOutputDir: URL) {
+            let xcframeworkOutputDir = switch self {
             case .default:
-                return packageDirectory.appendingPathComponent("XCFrameworks")
+                packageDirectory.appendingPathComponent("XCFrameworks")
             case .custom(let url):
-                return url
+                url
             }
+            let pluginExecutableOutputDir = xcframeworkOutputDir.appendingPathComponent("Plugins")
+            return (xcframeworkOutputDir, pluginExecutableOutputDir)
         }
     }
 
@@ -87,9 +89,9 @@ public struct Runner {
 
         try fileSystem.createDirectory(descriptionPackage.workspaceDirectory, recursive: true)
 
-        let outputDir = frameworkOutputDir.resolve(packageDirectory: packageDirectory)
+        let (xcframeworkOutputDir, pluginExecutableOutputDir) = frameworkOutputDir.resolve(packageDirectory: packageDirectory)
 
-        try fileSystem.createDirectory(outputDir.absolutePath, recursive: true)
+        try fileSystem.createDirectory(xcframeworkOutputDir.absolutePath, recursive: true)
 
         let buildOptionsMatrix = try options.buildOptionsContainer.makeBuildOptionsMatrix(descriptionPackage: descriptionPackage)
 
@@ -99,7 +101,8 @@ public struct Runner {
             buildOptionsMatrix: buildOptionsMatrix,
             cachePolicies: options.cachePolicies,
             overwrite: options.overwrite,
-            outputDir: outputDir,
+            xcframeworkOutputDir: xcframeworkOutputDir,
+            pluginExecutableOutputDir: pluginExecutableOutputDir,
             toolchainEnvironment: options.toolchainEnvironment
         )
         do {

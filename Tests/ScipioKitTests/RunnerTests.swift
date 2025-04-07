@@ -32,6 +32,7 @@ final class RunnerTests: XCTestCase {
     private let fileManager: FileManager = .default
     lazy var tempDir = fileManager.temporaryDirectory
     lazy var frameworkOutputDir = tempDir.appendingPathComponent("XCFrameworks")
+    lazy var pluginOutputDir = frameworkOutputDir.appendingPathComponent("Plugins")
 
     private let plistDecoder: PropertyListDecoder = .init()
 
@@ -277,7 +278,8 @@ final class RunnerTests: XCTestCase {
         let pinsStore = try descriptionPackage.workspace.pinsStore.load()
         let cacheSystem = CacheSystem(
             pinsStore: pinsStore,
-            outputDirectory: frameworkOutputDir
+            xcframeworkOutputDir: frameworkOutputDir,
+            pluginExecutableOutputDir: pluginOutputDir
         )
         let packages = descriptionPackage.graph.packages
             .filter { $0.manifest.displayName != descriptionPackage.manifest.displayName }
@@ -294,7 +296,7 @@ final class RunnerTests: XCTestCase {
             try await cacheSystem.generateVersionFile(for: product)
             // generate dummy directory
             try fileManager.createDirectory(
-                at: frameworkOutputDir.appendingPathComponent(product.buildProduct.frameworkName),
+                at: frameworkOutputDir.appendingPathComponent(product.buildProduct.artifactName),
                 withIntermediateDirectories: true
             )
         }
@@ -505,7 +507,8 @@ final class RunnerTests: XCTestCase {
         let pinsStore = try descriptionPackage.workspace.pinsStore.load()
         let cacheSystem = CacheSystem(
             pinsStore: pinsStore,
-            outputDirectory: frameworkOutputDir
+            xcframeworkOutputDir: frameworkOutputDir,
+            pluginExecutableOutputDir: pluginOutputDir
         )
         let packages = descriptionPackage.graph.packages
             .filter { $0.manifest.displayName != descriptionPackage.manifest.displayName }
