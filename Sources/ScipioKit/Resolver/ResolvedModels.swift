@@ -165,7 +165,6 @@ enum ResolvedModuleType: Hashable {
             case .local(let url):
                 return url
             case .remote(let packageIdentity, let name):
-//                let name = name.spm_mangledToC99ExtendedIdentifier()
                 return rootPackageDirectory
                     .appending(components: ".build", "artifacts", packageIdentity, name, name)
                     .appendingPathExtension("xcframework")
@@ -182,5 +181,27 @@ struct _ResolvedProduct: Hashable {
 
     var name: String {
         underlying.name
+    }
+}
+
+struct PackageResolved: Decodable {
+    let pins: [Pin]
+    let version: Int
+
+    struct Pin: Decodable, Identifiable, Hashable {
+        var id: String {
+            identity
+        }
+
+        let identity: String
+        let kind: String
+        let location: String
+        let state: State
+
+        struct State: Decodable, Hashable {
+            let revision: String
+            let version: String?
+            let branch: String?
+        }
     }
 }

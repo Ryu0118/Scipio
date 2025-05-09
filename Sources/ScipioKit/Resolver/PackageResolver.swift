@@ -6,8 +6,8 @@ import Basics
 import os
 
 actor PackageResolver {
-    private let dependencyPackagesByID: [DependencyPackageInfo.ID: DependencyPackageInfo]
-    private let dependencyPackagesByName: [String: DependencyPackageInfo]
+    private let dependencyPackagesByID: [DependencyPackage.ID: DependencyPackage]
+    private let dependencyPackagesByName: [String: DependencyPackage]
     private let packageDirectory: URL
     private let rootManifest: Manifest
     private let pins: [PackageResolved.Pin.ID: PackageResolved.Pin]
@@ -17,8 +17,8 @@ actor PackageResolver {
 
     private var allPackages: [_ResolvedPackage.ID: _ResolvedPackage] = [:]
     private var allModules: Set<_ResolvedModule> = []
-
-    private var cachedManifests: OSAllocatedUnfairLock<[DependencyPackageInfo: Manifest]> = .init(initialState: [:])
+    private var cachedModuleType: [Target: ResolvedModuleType] = [:]
+    private var cachedManifests: OSAllocatedUnfairLock<[DependencyPackage: Manifest]> = .init(initialState: [:])
 
     init(
         packageDirectory: URL,
@@ -30,7 +30,7 @@ actor PackageResolver {
         let parseResult = try await ShowDependenciesParser(executor: executor).parse(packageDirectory: packageDirectory)
 
         self.packageDirectory = packageDirectory
-        self.pins = packageResolved.pinsByID
+        self.pins = Dictionary(uniqueKeysWithValues: packageResolved.pins.map { ($0.id, $0) })
         self.dependencyPackagesByID = parseResult.dependencyPackagesByID
         self.dependencyPackagesByName = parseResult.dependencyPackagesByName
         self.rootManifest = rootManifest
@@ -49,10 +49,7 @@ actor PackageResolver {
     }
 
     private func resolve(manifest: Manifest) async throws -> _ResolvedPackage {
-        guard let dependencyPackage = dependencyPackagesByName[manifest.name] else {
-            fatalError()
-        }
-
+        let dependencyPackage = resolveDependencyPackage(for: manifest)
         let packageID = _ResolvedPackage.ID(packageKind: manifest.packageKind, packageIdentity: dependencyPackage.identity)
 
         if let resolvedPackage = allPackages[packageID] {
@@ -84,11 +81,10 @@ actor PackageResolver {
     private func resolve(
         byName: String,
         condition: PackageCondition?,
-        dependencyPackage: DependencyPackageInfo,
+        dependencyPackage: DependencyPackage,
         in manifest: Manifest
     ) async throws -> _ResolvedModule.Dependency? {
         if let target = manifest.targets.first(where: { $0.name == byName }) {
-
             return try await .module(
                 createResolvedModule(for: target, in: manifest, dependencyPackage: dependencyPackage),
                 conditions: self.resolve(condition: condition)
@@ -123,9 +119,7 @@ actor PackageResolver {
         dependencies: [PackageManifestKit.Target.Dependency],
         in manifest: Manifest
     ) async throws -> [_ResolvedModule.Dependency] {
-        guard let dependencyPackage = dependencyPackagesByName[manifest.name] else {
-            fatalError()
-        }
+        let dependencyPackage = resolveDependencyPackage(for: manifest)
 
         return try await dependencies.asyncCompactMap { dependency -> _ResolvedModule.Dependency? in
             switch dependency {
@@ -169,15 +163,15 @@ actor PackageResolver {
         in manifest: Manifest
     ) async throws -> _ResolvedProduct? {
         let packageName = packageName ?? productName
-        // show-dependenciesとdump-packageでpackageNameが異なるため、全てのパターンを試している
-        let dependencyPackage: DependencyPackageInfo? =
-            if let dependencyPackage = self.dependencyPackagesByName[packageName] {
+        // packageName can be different between `show-dependencies` and `dump-package`, so we try all possible cases
+        let dependencyPackage: DependencyPackage? =
+            if let dependencyPackage = dependencyPackagesByName[packageName] {
                 dependencyPackage
-            } else if let dependencyPackage = self.dependencyPackagesByID[packageName] {
+            } else if let dependencyPackage = dependencyPackagesByID[packageName] {
                 dependencyPackage
-            } else if let dependencyPackage = self.dependencyPackagesByID[packageName.lowercased()] {
+            } else if let dependencyPackage = dependencyPackagesByID[packageName.lowercased()] {
                 dependencyPackage
-            } else if let dependencyPackage = self.dependencyPackagesByName[productName] {
+            } else if let dependencyPackage = dependencyPackagesByName[productName] {
                 dependencyPackage
             } else {
                 nil
@@ -212,9 +206,7 @@ actor PackageResolver {
         product: Product,
         in manifest: PackageManifestKit.Manifest
     ) async throws -> _ResolvedProduct {
-        guard let packageIdentity = dependencyPackagesByName[manifest.name]?.identity else {
-            fatalError()
-        }
+        let packageIdentity = resolveDependencyPackage(for: manifest).identity
 
         return _ResolvedProduct(
             underlying: product,
@@ -230,9 +222,7 @@ actor PackageResolver {
         target: Target,
         in manifest: PackageManifestKit.Manifest
     ) async throws -> _ResolvedModule {
-        guard let dependencyPackage = dependencyPackagesByName[manifest.name] else {
-            fatalError()
-        }
+        let dependencyPackage = resolveDependencyPackage(for: manifest)
 
         return try await createResolvedModule(
             for: target,
@@ -251,45 +241,28 @@ actor PackageResolver {
         }
     }
 
-    func resolveModuleType(
+    private func resolveModuleType(
         of target: Target,
-        dependencyPackage: DependencyPackageInfo
+        dependencyPackage: DependencyPackage
     ) -> ResolvedModuleType {
-        func resolveTargetFullPath(target: Target) -> URL {
-            let packagePath = dependencyPackage.path
-            let relativePath = target.path ?? "Sources/\(target.name)"
-            return URL(fileURLWithPath: packagePath).appending(component: relativePath)
+        if let cachedModuleType = cachedModuleType[target] {
+            return cachedModuleType
         }
 
-        switch target.type {
-        case .binary:
-            let artifactType: ResolvedModuleType.BinaryArtifactLocation =
-                if target.url != nil {
-                    .remote(packageIdentity: dependencyPackage.identity, name: target.name)
-                }
-                else {
-                    .local(resolveTargetFullPath(target: target))
-                }
-            return .binary(artifactType)
-        default:
-            let moduleFullPath = resolveTargetFullPath(target: target)
-            let moduleExcludeFullPath = target.exclude.map { moduleFullPath.appending(component: $0) }
-            let publicHeadersPath = target.publicHeadersPath ?? "include"
-            let includeDir = moduleFullPath.appendingPathComponent(publicHeadersPath)
-            let hasSwiftSources = hasSwiftSources(in: moduleFullPath, excludeFullPaths: moduleExcludeFullPath)
+        let resolvedModuleType = ModuleTypeResolver(
+            target: target,
+            dependencyPackage: dependencyPackage
+        ).resolve()
 
-            return if hasSwiftSources {
-                .swift
-            } else {
-                .clang(includeDir: includeDir)
-            }
-        }
+        cachedModuleType[target] = resolvedModuleType
+
+        return resolvedModuleType
     }
 
-    func createResolvedModule(
+    private func createResolvedModule(
         for target: Target,
         in manifest: Manifest,
-        dependencyPackage: DependencyPackageInfo
+        dependencyPackage: DependencyPackage
     ) async throws -> _ResolvedModule {
         let module = try await _ResolvedModule(
             underlying: target,
@@ -302,65 +275,86 @@ actor PackageResolver {
         return module
     }
 
-    private func hasSwiftSources(in moduleFullPath: URL, excludeFullPaths: [URL]) -> Bool {
-        FileManager.default
-            .enumerator(at: moduleFullPath, includingPropertiesForKeys: nil)?
-            .lazy
-            .compactMap { $0 as? URL }
-            .filter { url in
-                excludeFullPaths.allSatisfy { !url.path.hasPrefix($0.path) }
-            }
-            .contains { $0.pathExtension == "swift" } ?? false
+    private func resolveDependencyPackage(for manifest: Manifest) -> DependencyPackage {
+        guard let dependencyPackage = dependencyPackagesByName[manifest.name] else {
+            fatalError("Manifest \(manifest.name) refers to unknown package")
+        }
+        return dependencyPackage
     }
 }
 
-func topologicalSort<T: Identifiable>(
-    _ nodes: [T], successors: (T) throws -> [T]
-) throws -> [T] {
-    // Implements a topological sort via recursion and reverse postorder DFS.
-    func visit(_ node: T,
-               _ stack: inout OrderedSet<T.ID>, _ visited: inout Set<T.ID>, _ result: inout [T],
-               _ successors: (T) throws -> [T]) throws {
-        // Mark this node as visited -- we are done if it already was.
-        if !visited.insert(node.id).inserted {
-            return
-        }
+private struct ModuleTypeResolver {
+    let target: Target
+    let dependencyPackage: DependencyPackage
 
-        // Otherwise, visit each adjacent node.
-        for succ in try successors(node) {
-            guard stack.append(succ.id).inserted else {
-                // If the successor is already in this current stack, we have found a cycle.
-                //
-                // FIXME: We could easily include information on the cycle we found here.
-                throw GraphError.unexpectedCycle
-            }
-            try visit(succ, &stack, &visited, &result, successors)
-            let popped = stack.removeLast()
-            assert(popped == succ.id)
-        }
+    let clangFileTypes = ["c", "m", "mm", "cc", "cpp", "cxx"]
+    let asmFileTypes = ["s", "S"]
+    let swiftFileType = "swift"
 
-        // Add to the result.
-        result.append(node)
+    func resolve() -> ResolvedModuleType {
+        switch target.type {
+        case .binary:
+            resolveModuleTypeForBinary()
+        default:
+            resolveModuleTypeForLibrary()
+        }
     }
 
-    // FIXME: This should use a stack not recursion.
-    var visited = Set<T.ID>()
-    var result = [T]()
-    var stack = OrderedSet<T.ID>()
-    for node in nodes {
-        precondition(stack.isEmpty)
-        stack.append(node.id)
-        try visit(node, &stack, &visited, &result, successors)
-        let popped = stack.removeLast()
-        assert(popped == node.id)
+    private func resolveModuleTypeForBinary() -> ResolvedModuleType {
+        precondition(target.type == .binary)
+
+        let artifactType: ResolvedModuleType.BinaryArtifactLocation =
+        if target.url != nil {
+            .remote(packageIdentity: dependencyPackage.identity, name: target.name)
+        }
+        else {
+            .local(resolveTargetFullPath(target: target))
+        }
+        return .binary(artifactType)
     }
 
-    return result.reversed()
-}
+    private func resolveModuleTypeForLibrary() -> ResolvedModuleType {
+        precondition(target.type != .binary)
 
-enum GraphError: Error {
-    /// A cycle was detected in the input.
-    case unexpectedCycle
+        let moduleFullPath = resolveTargetFullPath(target: target)
+        let moduleSourcesFullPaths = target.sources?.map { moduleFullPath.appending(component: $0) } ?? [moduleFullPath]
+        let moduleExcludeFullPaths = target.exclude.map { moduleFullPath.appending(component: $0) }
+        let publicHeadersPath = target.publicHeadersPath ?? "include"
+        let includeDir = moduleFullPath.appendingPathComponent(publicHeadersPath)
+
+        let sources: [URL] = moduleSourcesFullPaths.flatMap { source in
+            FileManager.default
+                .enumerator(at: source, includingPropertiesForKeys: nil)?
+                .lazy
+                .compactMap { $0 as? URL }
+                .filter { url in
+                    moduleExcludeFullPaths.allSatisfy { !url.path.hasPrefix($0.path) }
+                } ?? []
+        }
+
+        let hasSwiftSources = sources.contains { $0.pathExtension == swiftFileType } ?? false
+        let hasClangSources = sources.contains { (clangFileTypes + asmFileTypes).contains($0.pathExtension) }
+
+        // In SwiftPM, the module type (ClangModule or SwiftModule) is determined by checking the file extensions inside the module.
+        return if hasSwiftSources && hasClangSources {
+            // TODO: Update when SwiftPM supports mixed-language targets.
+            // Currently SwiftPM cannot mix Swift and C/Assembly in one target.
+            // ref: https://github.com/swiftlang/swift-evolution/blob/main/proposals/0403-swiftpm-mixed-language-targets.md
+            fatalError("Mixed-language target are not supported.")
+        } else if hasSwiftSources {
+            .swift
+        } else {
+            .clang(includeDir: includeDir)
+        }
+    }
+
+    private func resolveTargetFullPath(target: Target) -> URL {
+        let packagePath = dependencyPackage.path
+        // In SwiftPM, if target does not specify a path,
+        // it is assumed to be located at 'Sources/<target name>' by default.
+        let relativePath = target.path ?? "Sources/\(target.name)"
+        return URL(fileURLWithPath: packagePath).appending(component: relativePath)
+    }
 }
 
 private struct ManifestLoader: @unchecked Sendable {
@@ -371,7 +365,7 @@ private struct ManifestLoader: @unchecked Sendable {
         self.executor = executor
     }
 
-    func loadManifest(for dependency: DependencyPackageInfo) async throws -> Manifest {
+    func loadManifest(for dependency: DependencyPackage) async throws -> Manifest {
         let commands = [
             "/usr/bin/xcrun",
             "swift",
@@ -403,7 +397,7 @@ private struct PackageResolveExecutor: @unchecked Sendable {
             "package",
             "resolve",
             "--package-path",
-            packageDirectory.path()
+            packageDirectory.path(percentEncoded: false)
         ]
 
         try await executor.execute(commands)
@@ -423,9 +417,18 @@ private struct PackageResolveExecutor: @unchecked Sendable {
 }
 
 private struct ShowDependenciesParser: @unchecked Sendable {
+    private struct Response: Decodable {
+        var identity: String
+        var name: String
+        var url: String
+        var version: String
+        var path: String
+        var dependencies: [Response]?
+    }
+
     struct ParseResult {
-        var dependencyPackagesByID: [DependencyPackageInfo.ID: DependencyPackageInfo]
-        var dependencyPackagesByName: [String: DependencyPackageInfo]
+        var dependencyPackagesByID: [DependencyPackage.ID: DependencyPackage]
+        var dependencyPackagesByName: [String: DependencyPackage]
     }
 
     let executor: any Executor
@@ -448,16 +451,16 @@ private struct ShowDependenciesParser: @unchecked Sendable {
         ]
 
         let dependencyString = try await executor.execute(commands).unwrapOutput()
-        let dependency = try jsonDecoder.decode(DependencyPackage.self, from: dependencyString)
+        let dependency = try jsonDecoder.decode(Response.self, from: dependencyString)
         return flattenPackages(dependency)
     }
 
-    private func flattenPackages(_ package: DependencyPackage) -> ParseResult {
-        var dependencyPackagesByID: [DependencyPackageInfo.ID: DependencyPackageInfo] = [:]
-        var dependencyPackagesByName: [String: DependencyPackageInfo] = [:]
+    private func flattenPackages(_ package: Response) -> ParseResult {
+        var dependencyPackagesByID: [DependencyPackage.ID: DependencyPackage] = [:]
+        var dependencyPackagesByName: [String: DependencyPackage] = [:]
 
-        func traverse(_ package: DependencyPackage) {
-            let info = DependencyPackageInfo(
+        func traverse(_ package: Response) {
+            let info = DependencyPackage(
                 identity: package.identity,
                 name: package.name,
                 url: package.url,
@@ -468,7 +471,9 @@ private struct ShowDependenciesParser: @unchecked Sendable {
             dependencyPackagesByName[info.name] = info
             package.dependencies?.forEach { traverse($0) }
         }
+
         traverse(package)
+
         return ParseResult(
             dependencyPackagesByID: dependencyPackagesByID,
             dependencyPackagesByName: dependencyPackagesByName
@@ -476,16 +481,7 @@ private struct ShowDependenciesParser: @unchecked Sendable {
     }
 }
 
-private struct DependencyPackage: Decodable {
-    var identity: String
-    var name: String
-    var url: String
-    var version: String
-    var path: String
-    var dependencies: [DependencyPackage]?
-}
-
-struct DependencyPackageInfo: Codable, Identifiable, Hashable {
+private struct DependencyPackage: Codable, Identifiable, Hashable {
     var id: String {
         identity
     }
@@ -497,35 +493,7 @@ struct DependencyPackageInfo: Codable, Identifiable, Hashable {
     var path: String
 }
 
-struct PackageResolved: Decodable {
-    let pins: [Pin]
-    let version: Int
-
-    struct Pin: Decodable, Identifiable, Hashable {
-        var id: String {
-            identity
-        }
-
-        let identity: String
-        let kind: String
-        let location: String
-        let state: State
-
-        struct State: Decodable, Hashable {
-            let revision: String
-            let version: String?
-            let branch: String?
-        }
-    }
-}
-
-extension PackageResolved {
-    var pinsByID: [Pin.ID: Pin] {
-        Dictionary(uniqueKeysWithValues: pins.map { ($0.id, $0) })
-    }
-}
-
-extension PackageKind {
+fileprivate extension PackageKind {
     var localFileURL: URL? {
         switch self {
         case .root(let url), .fileSystem(let url), .localSourceControl(let url):
