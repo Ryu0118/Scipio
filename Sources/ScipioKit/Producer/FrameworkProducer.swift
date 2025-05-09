@@ -53,7 +53,7 @@ struct FrameworkProducer {
         try await clean()
 
         let buildProductDependencyGraph = try descriptionPackage.resolveBuildProductDependencyGraph()
-            .filter { [.library, .binary].contains($0.target.type) }
+            .filter { [.regular, .binary].contains($0.target.underlying.type) }
 
         try await processAllTargets(buildProductDependencyGraph: buildProductDependencyGraph)
     }
@@ -341,8 +341,8 @@ struct FrameworkProducer {
         let product = target.buildProduct
         let buildOptions = target.buildOptions
 
-        switch product.target.type {
-        case .library:
+        switch product.target.underlying.type {
+        case .regular:
             let compiler = PIFCompiler(
                 descriptionPackage: descriptionPackage,
                 buildOptions: buildOptions,
@@ -353,18 +353,15 @@ struct FrameworkProducer {
                                                  outputDirectory: outputDir,
                                                  overwrite: overwrite)
         case .binary:
-            guard let binaryTarget = product.target.underlying as? BinaryModule else {
-                fatalError("Unexpected failure")
-            }
             let binaryExtractor = BinaryExtractor(
-                package: descriptionPackage,
+                descriptionPackage: descriptionPackage,
                 outputDirectory: outputDir,
                 fileSystem: fileSystem
             )
-            try binaryExtractor.extract(of: binaryTarget, overwrite: overwrite)
-            logger.info("✅ Copy \(binaryTarget.c99name).xcframework", metadata: .color(.green))
+            try binaryExtractor.extract(of: product.target, overwrite: overwrite)
+            logger.info("✅ Copy \(product.target.c99name).xcframework", metadata: .color(.green))
         default:
-            fatalError("Unexpected target type \(product.target.type)")
+            fatalError("Unexpected target type \(product.target.underlying.type)")
         }
 
         return []
