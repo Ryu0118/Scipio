@@ -44,7 +44,9 @@ let package = Package(
         .package(url: "https://github.com/giginet/scipio-cache-storage.git",
                  from: "1.0.0"),
         .package(url: "https://github.com/giginet/PackageManifestKit",
-                 from: "0.1.0")
+                 from: "0.1.0"),
+        .package(url: "https://github.com/mtj0928/swift-async-operations.git",
+                 from: "0.3.0")
     ],
     targets: [
         .executableTarget(
@@ -65,7 +67,8 @@ let package = Package(
                 .product(name: "Algorithms", package: "swift-algorithms"),
                 .product(name: "Rainbow", package: "Rainbow"),
                 .product(name: "ScipioStorage", package: "scipio-cache-storage"),
-                .product(name: "PackageManifestKit", package: "PackageManifestKit")
+                .product(name: "PackageManifestKit", package: "PackageManifestKit"),
+                .product(name: "AsyncOperations", package: "swift-async-operations")
             ],
             swiftSettings: swiftSettings,
             plugins: [
