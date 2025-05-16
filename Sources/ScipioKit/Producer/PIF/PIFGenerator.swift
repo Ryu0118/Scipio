@@ -169,11 +169,11 @@ private struct PIFLibraryTargetModifier {
 
         let c99Name = pifTarget.name.spm_mangledToC99ExtendedIdentifier()
 
-        guard let resolvedTarget = descriptionPackage.newGraph.allModules.first(where: { $0.c99name == c99Name }) else {
+        guard let resolvedTarget = descriptionPackage._graph.allModules.first(where: { $0.c99name == c99Name }) else {
             fatalError("Resolved Target named \(c99Name) is not found.")
         }
 
-        guard let resolvedPackage = descriptionPackage.newGraph.package(for: resolvedTarget) else {
+        guard let resolvedPackage = descriptionPackage._graph.package(for: resolvedTarget) else {
             fatalError("Could not find a package")
         }
 
