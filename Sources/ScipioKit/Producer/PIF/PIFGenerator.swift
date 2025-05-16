@@ -143,8 +143,8 @@ private struct PIFLibraryTargetModifier {
     private let pifTarget: PIF.Target
     private let sdk: SDK
 
-    private let resolvedPackage: ResolvedPackage
-    private let resolvedTarget: ScipioResolvedModule
+    private let resolvedPackage: _ResolvedPackage
+    private let resolvedTarget: _ResolvedModule
 
     init(
         descriptionPackage: DescriptionPackage,
@@ -169,11 +169,11 @@ private struct PIFLibraryTargetModifier {
 
         let c99Name = pifTarget.name.spm_mangledToC99ExtendedIdentifier()
 
-        guard let resolvedTarget = descriptionPackage.graph.allModules.first(where: { $0.c99name == c99Name }) else {
+        guard let resolvedTarget = descriptionPackage.newGraph.allModules.first(where: { $0.c99name == c99Name }) else {
             fatalError("Resolved Target named \(c99Name) is not found.")
         }
 
-        guard let resolvedPackage = descriptionPackage.graph.package(for: resolvedTarget) else {
+        guard let resolvedPackage = descriptionPackage.newGraph.package(for: resolvedTarget) else {
             fatalError("Could not find a package")
         }
 
@@ -261,18 +261,18 @@ private struct PIFLibraryTargetModifier {
         // However, this PIFGenerator modified productType to framework.
         // So a bridging header will be generated in frameworks bundle even if `SWIFT_OBJC_INTERFACE_HEADER_DIR` was specified.
         // So it's need to replace `MODULEMAP_FILE_CONTENTS` to an absolute path.
-        if let swiftTarget = resolvedTarget.underlying as? ScipioSwiftModule {
+        if case .swift = resolvedTarget.resolvedModuleType {
             // Bridging Headers will be generated inside generated frameworks
             let productsDirectory = descriptionPackage.productsDirectory(
                 buildConfiguration: buildOptions.buildConfiguration,
                 sdk: sdk
             )
             let bridgingHeaderFullPath = productsDirectory.appending(
-                components: ["\(swiftTarget.c99name).framework", "Headers", "\(swiftTarget.name)-Swift.h"]
+                components: ["\(resolvedTarget.c99name).framework", "Headers", "\(resolvedTarget.name)-Swift.h"]
             )
 
             settings[.MODULEMAP_FILE_CONTENTS] = """
-                module \(swiftTarget.c99name) {
+                module \(resolvedTarget.c99name) {
                     header "\(bridgingHeaderFullPath.pathString)"
                     export *
                 }
