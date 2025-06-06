@@ -42,7 +42,7 @@ extension PackageResolver {
                     packageIdentity: dependencyPackage.identity,
                     name: target.name
                 )
-                let artifactsURL = artifactsLocation.artifactURL(rootPackageDirectory: rootPackageDirectory).spmAbsolutePath
+                let artifactsURL = artifactsLocation.artifactURL(rootPackageDirectory: rootPackageDirectory).absolutePath
 
                 return if fileSystem.exists(artifactsURL) {
                     artifactsLocation
@@ -113,9 +113,9 @@ extension PackageResolver {
             let swiftModuleFullPath = URL(filePath: packagePath).appending(component: swiftModuleRelativePath)
             let clangModuleFullPath = URL(filePath: packagePath).appending(component: defaultClangModulePath)
 
-            return if fileSystem.exists(swiftModuleFullPath.spmAbsolutePath) {
+            return if fileSystem.exists(swiftModuleFullPath.absolutePath) {
                 swiftModuleFullPath
-            } else if fileSystem.exists(clangModuleFullPath.spmAbsolutePath) {
+            } else if fileSystem.exists(clangModuleFullPath.absolutePath) {
                 clangModuleFullPath
             } else {
                 preconditionFailure("Cannot find module directory for target '\(target.name)'")

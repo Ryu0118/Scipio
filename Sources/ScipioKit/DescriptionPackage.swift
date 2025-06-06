@@ -47,8 +47,10 @@ struct DescriptionPackage: PackageLocator {
             packageDirectory.pathString,
         ]
 
-        let manifestString = try await executor.execute(commands).unwrapOutput()
-        let manifest = try jsonDecoder.decode(PackageManifestKit.Manifest.self, from: manifestString)
+        let manifestData = try await executor.execute(commands)
+            .unwrapOutput()
+            .data(using: .utf8)!
+        let manifest = try jsonDecoder.decode(PackageManifestKit.Manifest.self, from: manifestData)
 
         return manifest
     }
@@ -74,7 +76,7 @@ struct DescriptionPackage: PackageLocator {
         self.graph = try await PackageResolver(
             packageDirectory: packageDirectory.asURL,
             rootManifest: self.manifest,
-            fileSystem: Basics.localFileSystem
+            fileSystem: TSCBasic.localFileSystem
         ).resolve()
     }
 }
