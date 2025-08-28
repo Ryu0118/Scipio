@@ -12,7 +12,7 @@ jobs:
       - uses: actions/checkout@v5
       # Scipio can't be built with Xcode build mode, so it can't be a universal binary.
       - name: Build for arm64
-        run: swift build --disable-sandbox -c release --arch arm64 
+        run: swift build --disable-sandbox -c release --arch arm64
       - name: Build for x86_64
         run: swift build --disable-sandbox -c release --arch x86_64
       - uses: giginet/github-action-artifactbundle@v2
@@ -26,7 +26,7 @@ jobs:
           SHA256="${{ steps.artifactbundle.outputs.bundle_sha256 }}"
           TAG_NAME="${{ github.event.release.tag_name }}"
           gh release upload "${TAG_NAME}" "${BUNDLE_PATH}"
-          NEW_BODY="$(printf "%s\n%s" "$BODY" "Artifact bundle checksum: ``$SHA256``")"
+          NEW_BODY="${BODY}"$'\n\n'"Artifact bundle checksum: \`\`${SHA256}\`\`"
           gh release edit "${TAG_NAME}" --notes "${NEW_BODY}"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
