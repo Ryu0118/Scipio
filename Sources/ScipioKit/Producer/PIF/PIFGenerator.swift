@@ -47,27 +47,57 @@ struct PIFGenerator {
         return try PIFManipulator(jsonData: data)
     }
 
-    func generateJSON(for sdk: SDK) async throws -> Foundation.URL {
+    func generateJSON(for sdk: SDK, customWorkspaceDirectory: URL? = nil) async throws -> Foundation.URL {
         let manipulator = try await buildPIFManipulator()
 
+        let effectiveWorkspaceDirectory = customWorkspaceDirectory ?? packageLocator.workspaceDirectory
+        
         manipulator.updateTargets { target in
-            updateTarget(&target, sdk: sdk)
+            updateTarget(&target, sdk: sdk, effectiveWorkspaceDirectory: effectiveWorkspaceDirectory)
         }
 
         let newJSONData = try manipulator.dump()
+        
+        // Fix incorrect paths in PIF data for parallel builds
+        let correctedJSONData: Data
+        if let customWorkspaceDirectory = customWorkspaceDirectory {
+            let jsonString = String(data: newJSONData, encoding: .utf8) ?? ""
+            
+            // Replace all occurrences of the base workspace directory with custom directory
+            var correctedString = jsonString.replacingOccurrences(
+                of: packageLocator.workspaceDirectory.path(percentEncoded: false),
+                with: customWorkspaceDirectory.path(percentEncoded: false)
+            )
+            
+            // Also replace relative path references that might appear in build settings
+            correctedString = correctedString.replacingOccurrences(
+                of: "./.build/scipio",
+                with: customWorkspaceDirectory.path(percentEncoded: false)
+            )
+            
+            // Replace any remaining relative references
+            correctedString = correctedString.replacingOccurrences(
+                of: "/.build/scipio",
+                with: customWorkspaceDirectory.path(percentEncoded: false)
+            )
+            
+            correctedJSONData = correctedString.data(using: .utf8) ?? newJSONData
+        } else {
+            correctedJSONData = newJSONData
+        }
 
-        let path = packageLocator.workspaceDirectory
+        let path = effectiveWorkspaceDirectory
             .appending(component: "manifest-\(packageName)-\(sdk.settingValue).pif")
-        try fileSystem.writeFileContents(path, data: newJSONData)
+        try fileSystem.writeFileContents(path, data: correctedJSONData)
         return path
     }
 
-    private func updateTarget(_ target: inout PIFKit.Target, sdk: SDK) {
+    private func updateTarget(_ target: inout PIFKit.Target, sdk: SDK, effectiveWorkspaceDirectory: URL) {
         switch target.productType {
         case .objectFile:
             updateObjectFileTarget(&target, sdk: sdk)
         case .bundle:
-            generateInfoPlistForResource(for: &target)
+            generateInfoPlistForResource(for: &target, workspaceDirectory: effectiveWorkspaceDirectory)
         default:
             break
         }
@@ -232,11 +262,11 @@ struct PIFGenerator {
         """)
     }
 
-    private func generateInfoPlistForResource(for target: inout PIFKit.Target) {
+    private func generateInfoPlistForResource(for target: inout PIFKit.Target, workspaceDirectory: URL) {
         assert(target.productType == .bundle, "This method must be called for Resource bundles")
 
         let infoPlistGenerator = InfoPlistGenerator(fileSystem: fileSystem)
-        let infoPlistPath = packageLocator.workspaceDirectory.appending(component: "Info-\(target.name).plist")
+        let infoPlistPath = workspaceDirectory.appending(component: "Info-\(target.name).plist")
         do {
             try infoPlistGenerator.generateForResourceBundle(at: infoPlistPath)
         } catch {
@@ -248,9 +278,11 @@ struct PIFGenerator {
             // For resource bundle targets, generating Info.plist automatically in default.
             // However, generated Info.plist causes code signing issue when submitting to AppStore.
             // `CFBundleExecutable` is not allowed for Info.plist contains in resource bundles.
+            
+            // Update Info.plist path to use the correct workspace directory
+            mutableConfiguration.buildSettings["INFOPLIST_FILE"] = .string(infoPlistPath.path(percentEncoded: false))
             // So generating a Info.plist and set this
             mutableConfiguration.buildSettings["GENERATE_INFOPLIST_FILE"] = false
-            mutableConfiguration.buildSettings["INFOPLIST_FILE"] = .string(infoPlistPath.path(percentEncoded: false))
             return mutableConfiguration
         }
     }

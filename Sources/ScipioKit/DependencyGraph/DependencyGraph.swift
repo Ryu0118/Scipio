@@ -2,7 +2,7 @@ import Foundation
 
 /// A graph indicating dependencies between nodes.
 /// The graph means that the parent node depends on the child nodes.
-struct DependencyGraph<Value: Equatable> {
+struct DependencyGraph<Value: Equatable>: @unchecked Sendable {
     /// Root nodes which are not depended on by the other nodes.
     private(set) var rootNodes: [Node]
 

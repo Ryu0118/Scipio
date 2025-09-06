@@ -49,12 +49,17 @@ extension Runner {
             enableLibraryEvolution: buildOptions.shouldEnableLibraryEvolution,
             stripStaticDWARFSymbols: buildOptions.shouldStripDWARFSymbols
         )
+        // Auto-enable overwrite when cache is disabled (empty array)
+        let cachePolicies = Self.cachePolicies(from: commandType)
+        let shouldOverwrite = buildOptions.overwrite || cachePolicies.isEmpty
+        
         let runnerOptions = Runner.Options(
             baseBuildOptions: baseBuildOptions,
             shouldOnlyUseVersionsFromResolvedFile: buildOptions.shouldOnlyUseVersionsFromResolvedFile,
-            cachePolicies: Self.cachePolicies(from: commandType),
-            overwrite: buildOptions.overwrite,
-            verbose: globalOptions.verbose
+            cachePolicies: cachePolicies,
+            overwrite: shouldOverwrite,
+            verbose: globalOptions.verbose,
+            enableParallelBuild: buildOptions.enableParallelBuild
         )
         self.init(mode: commandType.mode, options: runnerOptions)
     }

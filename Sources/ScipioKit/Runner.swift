@@ -84,7 +84,8 @@ public struct Runner {
             buildOptionsMatrix: buildOptionsMatrix,
             cachePolicies: options.cachePolicies,
             overwrite: options.overwrite,
-            outputDir: outputDir
+            outputDir: outputDir,
+            enableParallelBuild: options.enableParallelBuild
         )
         do {
             try await producer.produce()
@@ -256,6 +257,7 @@ extension Runner {
         public var cachePolicies: [CachePolicy]
         public var overwrite: Bool
         public var verbose: Bool
+        public var enableParallelBuild: Bool
 
         public init(
             baseBuildOptions: BuildOptions = .init(),
@@ -263,7 +265,8 @@ extension Runner {
             shouldOnlyUseVersionsFromResolvedFile: Bool = false,
             cachePolicies: [CachePolicy] = [.project],
             overwrite: Bool = false,
-            verbose: Bool = false
+            verbose: Bool = false,
+            enableParallelBuild: Bool = true
         ) {
             self.buildOptionsContainer = BuildOptionsContainer(
                 baseBuildOptions: baseBuildOptions,
@@ -273,6 +276,7 @@ extension Runner {
             self.cachePolicies = cachePolicies
             self.overwrite = overwrite
             self.verbose = verbose
+            self.enableParallelBuild = enableParallelBuild
         }
     }
 }

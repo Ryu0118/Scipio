@@ -1,5 +1,45 @@
 import Foundation
 
+/// Global coordinator for XCFramework creation synchronization
+actor XCFrameworkCreationCoordinator {
+    private var activeCreations: Set<String> = []
+    
+    /// Maximum wait time for XCFramework creation lock (10 minutes)
+    private let maxWaitTime: UInt64 = 600_000_000_000 // 10 minutes in nanoseconds
+    
+    func waitForXCFrameworkCreation(_ frameworkName: String) async throws {
+        let startTime = DispatchTime.now()
+        let timeout = startTime + .nanoseconds(Int(maxWaitTime))
+        
+        while activeCreations.contains(frameworkName) {
+            // Check for timeout
+            if DispatchTime.now() >= timeout {
+                logger.error("⚠️ Timeout waiting for XCFramework creation lock: \(frameworkName)")
+                throw XCBuildClientError.xcframeworkCreationTimeout(frameworkName)
+            }
+            
+            try await Task.sleep(nanoseconds: 100_000_000) // 100ms
+        }
+        
+        activeCreations.insert(frameworkName)
+    }
+    
+    func finishXCFrameworkCreation(_ frameworkName: String) {
+        activeCreations.remove(frameworkName)
+    }
+}
+
+enum XCBuildClientError: LocalizedError {
+    case xcframeworkCreationTimeout(String)
+    
+    var errorDescription: String? {
+        switch self {
+        case .xcframeworkCreationTimeout(let frameworkName):
+            return "Timeout waiting for XCFramework creation lock: \(frameworkName)"
+        }
+    }
+}
+
 struct XCBuildClient {
     enum Error: LocalizedError {
         case xcbuildNotFound
@@ -19,6 +59,8 @@ struct XCBuildClient {
     private let packageLocator: any PackageLocator
     private let fileSystem: any FileSystem
     private let executor: any Executor
+    
+    private static let xcframeworkCreationCoordinator = XCFrameworkCreationCoordinator()
 
     init(
         buildProduct: BuildProduct,
@@ -74,38 +116,51 @@ struct XCBuildClient {
     func buildFramework(
         sdk: SDK,
         pifPath: URL,
-        buildParametersPath: URL
+        buildParametersPath: URL,
+        customDerivedDataPath: URL? = nil
     ) async throws -> URL {
         let xcbuildPath = try await fetchXCBuildPath()
 
         let executor = XCBuildExecutor(xcbuildPath: xcbuildPath)
+        let derivedDataPath = customDerivedDataPath ?? packageLocator.derivedDataPath
         try await executor.build(
             pifPath: pifPath,
             configuration: configuration,
-            derivedDataPath: packageLocator.derivedDataPath,
+            derivedDataPath: derivedDataPath,
             buildParametersPath: buildParametersPath,
             target: buildProduct.target
         )
 
-        let frameworkBundlePath = try assembleFramework(sdk: sdk)
+        let frameworkBundlePath = try assembleFramework(sdk: sdk, customDerivedDataPath: derivedDataPath)
         return frameworkBundlePath
     }
 
     /// Assemble framework from build artifacts
     /// - Parameter sdk: SDK
+    /// - Parameter customDerivedDataPath: Custom DerivedData path to use instead of default
     /// - Returns: Path to assembled framework bundle
-    private func assembleFramework(sdk: SDK) throws -> URL {
+    private func assembleFramework(sdk: SDK, customDerivedDataPath: URL? = nil) throws -> URL {
+        let effectivePackageLocator: any PackageLocator
+        if let customDerivedDataPath = customDerivedDataPath {
+            effectivePackageLocator = CustomDerivedDataPackageLocator(
+                baseLocator: packageLocator,
+                customDerivedDataPath: customDerivedDataPath
+            )
+        } else {
+            effectivePackageLocator = packageLocator
+        }
+        
         let frameworkComponentsCollector = FrameworkComponentsCollector(
             buildProduct: buildProduct,
             sdk: sdk,
             buildOptions: buildOptions,
-            packageLocator: packageLocator,
+            packageLocator: effectivePackageLocator,
             fileSystem: fileSystem
         )
 
         let components = try frameworkComponentsCollector.collectComponents(sdk: sdk)
 
-        let frameworkOutputDir = packageLocator.assembledFrameworksDirectory(
+        let frameworkOutputDir = effectivePackageLocator.assembledFrameworksDirectory(
             buildConfiguration: buildOptions.buildConfiguration,
             sdk: sdk
         )
@@ -120,8 +175,18 @@ struct XCBuildClient {
         return try assembler.assemble()
     }
 
-    private func assembledFrameworkPath(target: ResolvedModule, of sdk: SDK) throws -> URL {
-        let assembledFrameworkDir = packageLocator.assembledFrameworksDirectory(
+    private func assembledFrameworkPath(target: ResolvedModule, of sdk: SDK, customDerivedDataPath: URL? = nil) throws -> URL {
+        let effectivePackageLocator: any PackageLocator
+        if let customDerivedDataPath = customDerivedDataPath {
+            effectivePackageLocator = CustomDerivedDataPackageLocator(
+                baseLocator: packageLocator,
+                customDerivedDataPath: customDerivedDataPath
+            )
+        } else {
+            effectivePackageLocator = packageLocator
+        }
+        
+        let assembledFrameworkDir = effectivePackageLocator.assembledFrameworksDirectory(
             buildConfiguration: buildOptions.buildConfiguration,
             sdk: sdk
         )
@@ -129,35 +194,72 @@ struct XCBuildClient {
             .appending(component: "\(buildProduct.target.c99name).framework")
     }
 
+    
     func createXCFramework(
-        sdks: Set<SDK>,
+        frameworkPaths: [SDK: URL],
         debugSymbols: [SDK: [URL]]?,
-        outputPath: URL
+        outputPath: URL,
+        overwrite: Bool
     ) async throws {
-        let xcbuildPath = try await fetchXCBuildPath()
+        let frameworkName = outputPath.lastPathComponent
+        var lockAcquired = false
+        
+        do {
+            try await Self.xcframeworkCreationCoordinator.waitForXCFrameworkCreation(frameworkName)
+            lockAcquired = true
+            
+            if fileSystem.exists(outputPath) && overwrite {
+                logger.info("💥 Delete \(frameworkName)", metadata: .color(.red))
+                try fileSystem.removeFileTree(outputPath)
+            }
+            
+            let xcbuildPath = try await fetchXCBuildPath()
 
-        let additionalArguments = try buildCreateXCFrameworkArguments(
-            sdks: sdks,
-            debugSymbols: debugSymbols,
-            outputPath: outputPath
-        )
+            let additionalArguments = try buildCreateXCFrameworkArguments(
+                frameworkPaths: frameworkPaths,
+                debugSymbols: debugSymbols,
+                outputPath: outputPath
+            )
 
-        let arguments: [String] = [
-            xcbuildPath.path(percentEncoded: false),
-            "createXCFramework",
-        ]
-        + additionalArguments
-        try await executor.execute(arguments)
+            let arguments: [String] = [
+                xcbuildPath.path(percentEncoded: false),
+                "createXCFramework",
+            ]
+            + additionalArguments
+            
+            logger.debug("🔍 XCBuild command: \(arguments.joined(separator: " "))")
+            do {
+                try await executor.execute(arguments)
+                logger.info("✅ Completed XCFramework creation: \(frameworkName)")
+            } catch {
+                logger.error("❌ XCFramework creation failed for \(frameworkName): \(error)")
+                throw error
+            }
+            
+            await Self.xcframeworkCreationCoordinator.finishXCFrameworkCreation(frameworkName)
+            lockAcquired = false
+            
+        } catch {
+            if lockAcquired {
+                await Self.xcframeworkCreationCoordinator.finishXCFrameworkCreation(frameworkName)
+            }
+            throw error
+        }
     }
-
+    
     private func buildCreateXCFrameworkArguments(
-        sdks: Set<SDK>,
+        frameworkPaths: [SDK: URL],
         debugSymbols: [SDK: [URL]]?,
         outputPath: URL
     ) throws -> [String] {
-        let frameworksWithDebugSymbolArguments: [String] = try sdks.reduce([]) { arguments, sdk in
-            let path = try assembledFrameworkPath(target: buildProduct.target, of: sdk)
-            var result = arguments + ["-framework", path.path(percentEncoded: false)]
+        logger.debug("🔍 XCFramework paths being used:")
+        for (sdk, path) in frameworkPaths {
+            logger.debug("🔍   \(sdk.displayName): \(path.path(percentEncoded: false))")
+        }
+        
+        let frameworksWithDebugSymbolArguments: [String] = frameworkPaths.keys.reduce([]) { arguments, sdk in
+            guard let frameworkPath = frameworkPaths[sdk] else { return arguments }
+            var result = arguments + ["-framework", frameworkPath.path(percentEncoded: false)]
             if let debugSymbols, let paths = debugSymbols[sdk] {
                 paths.forEach { path in
                     result += ["-debug-symbols", path.path(percentEncoded: false)]
@@ -168,8 +270,21 @@ struct XCBuildClient {
 
         let outputPathArguments: [String] = ["-output", outputPath.path(percentEncoded: false)]
 
-        // Default behavior, this command requires swiftinterface. If they don't exist, `-allow-internal-distribution` must be required.
         let additionalFlags = buildOptions.enableLibraryEvolution ? [] : ["-allow-internal-distribution"]
         return frameworksWithDebugSymbolArguments + outputPathArguments + additionalFlags
+    }
+}
+
+private struct CustomDerivedDataPackageLocator: PackageLocator {
+    private let baseLocator: any PackageLocator
+    private let customPath: URL
+    
+    var packageDirectory: URL { baseLocator.packageDirectory }
+    var derivedDataPath: URL { customPath }
+    var workspaceDirectory: URL { customPath.deletingLastPathComponent() }
+    
+    init(baseLocator: any PackageLocator, customDerivedDataPath: URL) {
+        self.baseLocator = baseLocator
+        self.customPath = customDerivedDataPath
     }
 }

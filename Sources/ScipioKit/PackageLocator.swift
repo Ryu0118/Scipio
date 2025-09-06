@@ -3,6 +3,7 @@ import Foundation
 /// Holds the packageDirectory Scipio works on, and defines some path-related functionalities.
 protocol PackageLocator: Sendable {
     var packageDirectory: URL { get }
+    var derivedDataPath: URL { get }
 }
 
 extension PackageLocator {

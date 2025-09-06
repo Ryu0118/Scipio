@@ -47,7 +47,8 @@ struct BuildParametersGenerator {
     func generate(
         for sdk: SDK,
         buildParameters: Parameters,
-        destinationDir: URL
+        destinationDir: URL,
+        customDerivedDataPath: URL? = nil
     ) throws -> URL {
         let targetArchitecture = buildParameters.arch
 
@@ -85,6 +86,37 @@ struct BuildParametersGenerator {
         settings["OTHER_LDFLAGS"] = expandFlags(
             buildParameters.flags.linkerFlags.map { $0.spm_shellEscaped() }
         )
+
+        // Set ModuleCache path to use custom DerivedData path if provided
+        if let customDerivedDataPath = customDerivedDataPath {
+            // Ensure absolute path by standardizing
+            let absoluteDerivedDataPath = customDerivedDataPath.standardizedFileURL
+            let moduleCacheDir = absoluteDerivedDataPath.appending(component: "ModuleCache.noindex")
+            let sessionFile = moduleCacheDir.appending(component: "Session.modulevalidation")
+            
+            // Pre-create necessary cache directories to prevent write errors
+            try fileSystem.createDirectory(moduleCacheDir, recursive: true)
+            
+            // Pre-create SDKStatCaches directory
+            let sdkStatCachesDir = absoluteDerivedDataPath.appending(component: "SDKStatCaches.noindex")
+            try fileSystem.createDirectory(sdkStatCachesDir, recursive: true)
+            
+            // Pre-create other necessary directories
+            let intermediatesDir = absoluteDerivedDataPath.appending(component: "Intermediates.noindex")
+            let productsDir = absoluteDerivedDataPath.appending(component: "Products")
+            try fileSystem.createDirectory(intermediatesDir, recursive: true)
+            try fileSystem.createDirectory(productsDir, recursive: true)
+            
+            settings["CLANG_MODULES_BUILD_SESSION_FILE"] = sessionFile.path(percentEncoded: false)
+            settings["MODULE_CACHE_DIR"] = moduleCacheDir.path(percentEncoded: false)
+            
+            logger.info("🔍 Setting ModuleCache paths:")
+            logger.info("🔍   MODULE_CACHE_DIR: \(moduleCacheDir.path(percentEncoded: false))")
+            logger.info("🔍   CLANG_MODULES_BUILD_SESSION_FILE: \(sessionFile.path(percentEncoded: false))")
+            logger.info("🔍 customDerivedDataPath was: \(customDerivedDataPath.path(percentEncoded: false))")
+            logger.info("🔍 customDerivedDataPath.isFileURL: \(customDerivedDataPath.isFileURL)")
+            logger.info("🔍 customDerivedDataPath.hasDirectoryPath: \(customDerivedDataPath.hasDirectoryPath)")
+        }
 
         let additionalSettings = buildOptions.extraBuildParameters ?? [:]
         settings.merge(additionalSettings, uniquingKeysWith: { $1 })

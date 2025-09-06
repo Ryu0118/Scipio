@@ -1,4 +1,5 @@
 import Foundation
+import AsyncOperations
 
 struct PIFCompiler: Compiler {
     let descriptionPackage: DescriptionPackage
@@ -8,6 +9,24 @@ struct PIFCompiler: Compiler {
     private let buildOptionsMatrix: [String: BuildOptions]
 
     private let buildParametersGenerator: BuildParametersGenerator
+    
+    private struct SDKBuildResult {
+        let sdk: SDK
+        let frameworkPath: URL?
+        let error: Error?
+        
+        init(sdk: SDK, frameworkPath: URL) {
+            self.sdk = sdk
+            self.frameworkPath = frameworkPath
+            self.error = nil
+        }
+        
+        init(sdk: SDK, error: Error) {
+            self.sdk = sdk
+            self.frameworkPath = nil
+            self.error = error
+        }
+    }
 
     init(
         descriptionPackage: DescriptionPackage,
@@ -37,13 +56,17 @@ struct PIFCompiler: Compiler {
         return try await toolchainGenerator.makeToolChain(sdk: sdk)
     }
 
+    
     func createXCFramework(buildProduct: BuildProduct, outputDirectory: URL, overwrite: Bool) async throws {
+        try await createXCFramework(buildProduct: buildProduct, outputDirectory: outputDirectory, overwrite: overwrite, customDerivedDataPath: nil)
+    }
+    
+    func createXCFramework(buildProduct: BuildProduct, outputDirectory: URL, overwrite: Bool, customDerivedDataPath: URL? = nil, enablePlatformParallelBuild: Bool = true) async throws {
         let sdks = buildOptions.sdks
         let sdkNames = sdks.map(\.displayName).joined(separator: ", ")
         let target = buildProduct.target
 
-        // Build frameworks for each SDK
-        logger.info("📦 Building \(target.name) for \(sdkNames)")
+        logger.info("📦 Building \(target.name) for \(sdkNames)\(enablePlatformParallelBuild ? " in parallel" : "")")
 
         let xcBuildClient: XCBuildClient = .init(
             buildProduct: buildProduct,
@@ -54,52 +77,74 @@ struct PIFCompiler: Compiler {
 
         let debugSymbolStripper = DWARFSymbolStripper(executor: executor)
 
-        for sdk in sdks {
-            let toolchain = try await makeToolchain(for: sdk)
-            let buildParameters = await buildParametersGenerator.generate(from: buildOptions, toolchain: toolchain)
-
-            let generator = try PIFGenerator(
-                packageName: descriptionPackage.name,
-                packageLocator: descriptionPackage,
-                allModules: descriptionPackage.graph.allModules,
-                toolchainLibDirectory: buildParameters.toolchain.toolchainLibDir,
-                buildOptions: buildOptions,
-                buildOptionsMatrix: buildOptionsMatrix
-            )
-            let pifPath = try await generator.generateJSON(for: sdk)
-            let buildParametersPath = try buildParametersGenerator.generate(
-                for: sdk,
-                buildParameters: buildParameters,
-                destinationDir: descriptionPackage.workspaceDirectory
-            )
-
-            do {
-                let frameworkBundlePath = try await xcBuildClient.buildFramework(
-                    sdk: sdk,
-                    pifPath: pifPath,
-                    buildParametersPath: buildParametersPath
-                )
-
-                if buildOptions.stripStaticDWARFSymbols && buildOptions.frameworkType == .static {
-                    logger.debug("🐛 Stripping debug symbols of \(target.name) (\(sdk.displayName))")
-                    let binaryPath = frameworkBundlePath.appending(component: buildProduct.target.c99name)
-                    try await debugSymbolStripper.stripDebugSymbol(binaryPath)
+        let frameworkBundlePaths: [SDK: URL]
+        
+        if enablePlatformParallelBuild && sdks.count > 1 {
+            // Build frameworks for all SDKs in parallel
+            let sdkBuildResults = await sdks.asyncMap(numberOfConcurrentTasks: UInt(sdks.count)) { sdk in
+                do {
+                    let result = try await buildFrameworkForSDK(
+                        sdk: sdk,
+                        target: target,
+                        buildProduct: buildProduct,
+                        xcBuildClient: xcBuildClient,
+                        debugSymbolStripper: debugSymbolStripper,
+                        customDerivedDataPath: customDerivedDataPath
+                    )
+                    return result
+                } catch {
+                    logger.error("Unable to build for \(sdk.displayName)", metadata: .color(.red))
+                    logger.error(error)
+                    return SDKBuildResult(sdk: sdk, error: error)
                 }
-            } catch {
-                logger.error("Unable to build for \(sdk.displayName)", metadata: .color(.red))
-                logger.error(error)
             }
+            
+            // Check for errors and collect successful results
+            var parallelFrameworkPaths: [SDK: URL] = [:]
+            var buildErrors: [SDK: Error] = [:]
+            
+            for result in sdkBuildResults {
+                if let error = result.error {
+                    buildErrors[result.sdk] = error
+                } else if let frameworkPath = result.frameworkPath {
+                    parallelFrameworkPaths[result.sdk] = frameworkPath
+                }
+            }
+            
+            // If any builds failed, throw the first error
+            if !buildErrors.isEmpty {
+                let failedPlatforms = buildErrors.keys.map(\.displayName).joined(separator: ", ")
+                logger.error("Failed to build for platforms: \(failedPlatforms)", metadata: .color(.red))
+                throw buildErrors.values.first!
+            }
+            
+            frameworkBundlePaths = parallelFrameworkPaths
+        } else {
+            // Build frameworks sequentially to avoid resource conflicts
+            var sequentialFrameworkPaths: [SDK: URL] = [:]
+            
+            for sdk in sdks {
+                let result = try await buildFrameworkForSDK(
+                    sdk: sdk,
+                    target: target,
+                    buildProduct: buildProduct,
+                    xcBuildClient: xcBuildClient,
+                    debugSymbolStripper: debugSymbolStripper,
+                    customDerivedDataPath: customDerivedDataPath
+                )
+                sequentialFrameworkPaths[result.sdk] = result.frameworkPath!
+            }
+            
+            frameworkBundlePaths = sequentialFrameworkPaths
         }
+        
+        let successfulPlatforms = frameworkBundlePaths.keys.map(\.displayName).joined(separator: ", ")
+        logger.info("✅ Successfully built \(target.name) for all platforms: \(successfulPlatforms)")
 
         logger.info("🚀 Combining into XCFramework...")
 
-        // If there is existing framework, remove it
         let frameworkName = target.xcFrameworkName
         let outputXCFrameworkPath = URL(filePath: outputDirectory.path).appending(component: frameworkName)
-        if fileSystem.exists(outputXCFrameworkPath) && overwrite {
-            logger.info("💥 Delete \(frameworkName)", metadata: .color(.red))
-            try fileSystem.removeFileTree(outputXCFrameworkPath)
-        }
 
         let debugSymbolPaths: [SDK: [URL]]?
         if buildOptions.isDebugSymbolsEmbedded {
@@ -110,11 +155,67 @@ struct PIFCompiler: Compiler {
             debugSymbolPaths = nil
         }
 
-        // Combine all frameworks into one XCFramework
         try await xcBuildClient.createXCFramework(
-            sdks: Set(buildOptions.sdks),
+            frameworkPaths: frameworkBundlePaths,
             debugSymbols: debugSymbolPaths,
-            outputPath: outputXCFrameworkPath
+            outputPath: outputXCFrameworkPath,
+            overwrite: overwrite
         )
+    }
+    
+    private func buildFrameworkForSDK(
+        sdk: SDK,
+        target: ResolvedModule,
+        buildProduct: BuildProduct,
+        xcBuildClient: XCBuildClient,
+        debugSymbolStripper: DWARFSymbolStripper,
+        customDerivedDataPath: URL?
+    ) async throws -> SDKBuildResult {
+        let toolchain = try await makeToolchain(for: sdk)
+        let buildParameters = await buildParametersGenerator.generate(from: buildOptions, toolchain: toolchain)
+
+        let platformSpecificDerivedDataPath: URL?
+        if let customDerivedDataPath = customDerivedDataPath {
+            platformSpecificDerivedDataPath = customDerivedDataPath.appendingPathComponent("Platform_\(sdk.settingValue)")
+            try fileSystem.createDirectory(platformSpecificDerivedDataPath!, recursive: true)
+            logger.debug("🗂️ Created platform-specific DerivedData: \(platformSpecificDerivedDataPath!.path(percentEncoded: false))")
+        } else {
+            platformSpecificDerivedDataPath = nil
+        }
+
+        let generator = try PIFGenerator(
+            packageName: descriptionPackage.name,
+            packageLocator: descriptionPackage,
+            allModules: descriptionPackage.graph.allModules,
+            toolchainLibDirectory: buildParameters.toolchain.toolchainLibDir,
+            buildOptions: buildOptions,
+            buildOptionsMatrix: buildOptionsMatrix
+        )
+        
+        let effectiveWorkspaceDirectory = platformSpecificDerivedDataPath ?? descriptionPackage.workspaceDirectory
+        let pifPath = try await generator.generateJSON(for: sdk, customWorkspaceDirectory: platformSpecificDerivedDataPath)
+        let buildParametersPath = try buildParametersGenerator.generate(
+            for: sdk,
+            buildParameters: buildParameters,
+            destinationDir: effectiveWorkspaceDirectory
+        )
+
+        logger.debug("🔧 Building \(target.name) for \(sdk.displayName)")
+        let frameworkBundlePath = try await xcBuildClient.buildFramework(
+            sdk: sdk,
+            pifPath: pifPath,
+            buildParametersPath: buildParametersPath,
+            customDerivedDataPath: platformSpecificDerivedDataPath
+        )
+        
+        logger.debug("✅ Successfully built \(target.name) for \(sdk.displayName)")
+
+        if buildOptions.stripStaticDWARFSymbols && buildOptions.frameworkType == .static {
+            logger.debug("🐛 Stripping debug symbols of \(target.name) (\(sdk.displayName))")
+            let binaryPath = frameworkBundlePath.appending(component: buildProduct.target.c99name)
+            try await debugSymbolStripper.stripDebugSymbol(binaryPath)
+        }
+        
+        return SDKBuildResult(sdk: sdk, frameworkPath: frameworkBundlePath)
     }
 }

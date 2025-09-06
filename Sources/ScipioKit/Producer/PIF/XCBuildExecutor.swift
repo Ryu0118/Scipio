@@ -13,20 +13,38 @@ struct XCBuildExecutor {
         buildParametersPath: URL,
         target: ResolvedModule
     ) async throws {
-        let executor = await BufferedXCBuildMessageExecutor([
+        // Ensure absolute paths for XCBuild and remove trailing slashes
+        let absoluteDerivedDataPath = derivedDataPath.standardizedFileURL.absoluteURL
+        let absoluteBuildParametersPath = buildParametersPath.standardizedFileURL
+        
+        // Remove trailing slash from DerivedData path to prevent double slashes
+        var derivedDataPathString = absoluteDerivedDataPath.path(percentEncoded: false)
+        if derivedDataPathString.hasSuffix("/") {
+            derivedDataPathString = String(derivedDataPathString.dropLast())
+        }
+        
+        
+        let args = [
             xcbuildPath.path(percentEncoded: false),
             "build",
             pifPath.path(percentEncoded: false),
             "--configuration",
             configuration.settingsValue,
             "--derivedDataPath",
-            derivedDataPath.path(percentEncoded: false),
+            derivedDataPathString,
             "--buildParametersFile",
-            buildParametersPath.path(percentEncoded: false),
+            absoluteBuildParametersPath.path(percentEncoded: false),
             "--target",
             target.name,
-        ])
+        ]
+        
+        logger.info("🚀 Starting build for \(target.name): \(xcbuildPath.lastPathComponent)")
+        logger.debug("📝 Build command: \(args.joined(separator: " "))")
+        
+        let executor = await BufferedXCBuildMessageExecutor(args)
         try await executor.run()
+        
+        logger.info("🎯 Completed build for \(target.name)")
     }
 }
 
