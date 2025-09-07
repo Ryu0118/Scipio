@@ -74,33 +74,37 @@ struct XCBuildClient {
     func buildFramework(
         sdk: SDK,
         pifPath: URL,
-        buildParametersPath: URL
+        buildParametersPath: URL,
+        customDerivedDataPath: URL? = nil
     ) async throws -> URL {
         let xcbuildPath = try await fetchXCBuildPath()
+        let derivedDataPath = customDerivedDataPath ?? packageLocator.derivedDataPath
 
         let executor = XCBuildExecutor(xcbuildPath: xcbuildPath)
         try await executor.build(
             pifPath: pifPath,
             configuration: configuration,
-            derivedDataPath: packageLocator.derivedDataPath,
+            derivedDataPath: derivedDataPath,
             buildParametersPath: buildParametersPath,
             target: buildProduct.target
         )
 
-        let frameworkBundlePath = try assembleFramework(sdk: sdk)
+        let frameworkBundlePath = try assembleFramework(sdk: sdk, customDerivedDataPath: customDerivedDataPath)
         return frameworkBundlePath
     }
 
     /// Assemble framework from build artifacts
     /// - Parameter sdk: SDK
+    /// - Parameter customDerivedDataPath: Optional custom DerivedData path for parallel builds
     /// - Returns: Path to assembled framework bundle
-    private func assembleFramework(sdk: SDK) throws -> URL {
+    private func assembleFramework(sdk: SDK, customDerivedDataPath: URL? = nil) throws -> URL {
         let frameworkComponentsCollector = FrameworkComponentsCollector(
             buildProduct: buildProduct,
             sdk: sdk,
             buildOptions: buildOptions,
             packageLocator: packageLocator,
-            fileSystem: fileSystem
+            fileSystem: fileSystem,
+            customDerivedDataPath: customDerivedDataPath
         )
 
         let components = try frameworkComponentsCollector.collectComponents(sdk: sdk)

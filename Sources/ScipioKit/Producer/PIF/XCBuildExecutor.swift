@@ -65,12 +65,17 @@ private actor BufferedXCBuildMessageExecutor {
             _ = try await executor.execute(args)
         } catch let error as ProcessExecutorError {
             switch error {
-            case .executableNotFound, .signalled, .unknownError: throw error
+            case .executableNotFound, .signalled, .unknownError: 
+                logger.error(error)
+                throw error
             case .terminated:
                 let output = allMessages.joined(separator: "\n")
+                logger.info("XCBuild terminated with error output:")
+                logger.info("\(output)")
                 throw ProcessExecutorError.terminated(errorOutput: output)
             }
         } catch {
+            logger.error(error)
             throw ProcessExecutorError.unknownError(error)
         }
 
@@ -150,7 +155,7 @@ private actor BufferedXCBuildMessageExecutor {
     }
 
     private func log(
-        level: Logger.Level = .trace,
+        level: Logger.Level = .debug,
         target: String? = nil,
         task: Int? = nil,
         _ message: String

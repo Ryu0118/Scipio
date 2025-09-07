@@ -46,7 +46,8 @@ struct FrameworkComponentsCollector {
         sdk: SDK,
         buildOptions: BuildOptions,
         packageLocator: some PackageLocator,
-        fileSystem: some FileSystem
+        fileSystem: some FileSystem,
+        customDerivedDataPath: URL? = nil
     ) {
         self.buildProduct = buildProduct
         self.sdk = sdk
@@ -54,10 +55,30 @@ struct FrameworkComponentsCollector {
         self.packageLocator = packageLocator
         self.fileSystem = fileSystem
 
-        productsDirectory = packageLocator.productsDirectory(
-            buildConfiguration: buildOptions.buildConfiguration,
-            sdk: sdk
-        )
+        if let customDerivedDataPath = customDerivedDataPath {
+            // Use custom DerivedData path for parallel builds
+            let intermediateDirectoryName = Self.productDirectoryName(
+                buildConfiguration: buildOptions.buildConfiguration,
+                sdk: sdk
+            )
+            productsDirectory = customDerivedDataPath.appending(components: "Products", intermediateDirectoryName)
+        } else {
+            // Use default shared DerivedData path for serial builds
+            productsDirectory = packageLocator.productsDirectory(
+                buildConfiguration: buildOptions.buildConfiguration,
+                sdk: sdk
+            )
+        }
+    }
+    
+    /// Returns an intermediate directory name in the Products dir.
+    /// e.g. `Debug` / `Debug-iphoneos`
+    private static func productDirectoryName(buildConfiguration: BuildConfiguration, sdk: SDK) -> String {
+        if buildConfiguration == .release {
+            return sdk.displayName
+        } else {
+            return "\(buildConfiguration.settingsValue)-\(sdk.settingValue)"
+        }
     }
 
     func collectComponents(sdk: SDK) throws -> FrameworkComponents {

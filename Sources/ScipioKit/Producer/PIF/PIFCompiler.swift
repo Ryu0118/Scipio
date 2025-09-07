@@ -9,16 +9,20 @@ struct PIFCompiler: Compiler {
 
     private let buildParametersGenerator: BuildParametersGenerator
 
+    private let customDerivedDataPath: URL?
+    
     init(
         descriptionPackage: DescriptionPackage,
         buildOptions: BuildOptions,
         buildOptionsMatrix: [String: BuildOptions],
+        customDerivedDataPath: URL? = nil,
         fileSystem: any FileSystem = LocalFileSystem.default,
         executor: any Executor = ProcessExecutor()
     ) {
         self.descriptionPackage = descriptionPackage
         self.buildOptions = buildOptions
         self.buildOptionsMatrix = buildOptionsMatrix
+        self.customDerivedDataPath = customDerivedDataPath
         self.fileSystem = fileSystem
         self.executor = executor
         self.buildParametersGenerator = .init(buildOptions: buildOptions, fileSystem: fileSystem, executor: executor)
@@ -77,7 +81,8 @@ struct PIFCompiler: Compiler {
                 let frameworkBundlePath = try await xcBuildClient.buildFramework(
                     sdk: sdk,
                     pifPath: pifPath,
-                    buildParametersPath: buildParametersPath
+                    buildParametersPath: buildParametersPath,
+                    customDerivedDataPath: customDerivedDataPath
                 )
 
                 if buildOptions.stripStaticDWARFSymbols && buildOptions.frameworkType == .static {

@@ -11,6 +11,7 @@ struct FrameworkProducer {
     private let overwrite: Bool
     private let outputDir: URL
     private let fileSystem: any FileSystem
+    private let experimentalParallelBuild: Bool
 
     private var shouldGenerateVersionFile: Bool {
         // cache is not disabled
@@ -32,6 +33,7 @@ struct FrameworkProducer {
         cachePolicies: [Runner.Options.CachePolicy],
         overwrite: Bool,
         outputDir: URL,
+        experimentalParallelBuild: Bool = false,
         fileSystem: any FileSystem = LocalFileSystem.default
     ) {
         self.descriptionPackage = descriptionPackage
@@ -40,6 +42,7 @@ struct FrameworkProducer {
         self.cachePolicies = cachePolicies
         self.overwrite = overwrite
         self.outputDir = outputDir
+        self.experimentalParallelBuild = experimentalParallelBuild
         self.fileSystem = fileSystem
     }
 
@@ -296,27 +299,28 @@ struct FrameworkProducer {
     }
 
     private func buildTargets(_ targets: DependencyGraph<CacheSystem.CacheTarget>) async -> TargetBuildResult {
-        var builtTargets = OrderedCollections.OrderedSet<CacheSystem.CacheTarget>()
-
-        do {
-            var targets = targets
-            while let leafNode = targets.leafs.first {
-                let buildTarget = leafNode.value
-                try await buildXCFrameworks(
-                    buildTarget,
-                    outputDir: outputDir,
-                    buildOptionsMatrix: buildOptionsMatrix
-                )
-                builtTargets.append(buildTarget)
-                targets.remove(buildTarget)
-            }
-            return .completed(builtTargets: builtTargets)
-        } catch {
-            return .interrupted(builtTargets: builtTargets, error: error)
-        }
+        // Determine build strategy based on experimental flag
+        let strategy: BuildStrategy = experimentalParallelBuild ? .parallel : .serial
+        
+        logger.info("🎯 Build Strategy: \(strategy.displayName)")
+        
+        // Initialize build operations
+        let buildOperations = BuildOperations(
+            descriptionPackage: descriptionPackage,
+            buildOptionsMatrix: buildOptionsMatrix,
+            outputDir: outputDir,
+            fileSystem: fileSystem
+        )
+        
+        // Create build plan using BuildPlanner
+        let buildPlan = BuildPlanner.createBuildPlan(from: targets, strategy: strategy)
+        logger.info("📋 \(buildPlan.description)")
+        
+        // Execute build plan
+        return await buildOperations.executeBuildPlan(buildPlan)
     }
 
-    private enum TargetBuildResult {
+    enum TargetBuildResult {
         case interrupted(builtTargets: OrderedCollections.OrderedSet<CacheSystem.CacheTarget>, error: any Error)
         case completed(builtTargets: OrderedCollections.OrderedSet<CacheSystem.CacheTarget>)
     }
