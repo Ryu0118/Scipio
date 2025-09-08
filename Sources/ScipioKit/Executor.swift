@@ -119,6 +119,8 @@ public struct ProcessExecutor<Decoder: ErrorDecoder>: Executor, Sendable {
             throw ProcessExecutorError.executableNotFound
         }
 
+        logger.debug("\(arguments.joined(separator: " "))")
+
         let executableURL = URL(filePath: executable)
         guard fileSystem.exists(executableURL), fileSystem.isFile(executableURL) else {
             throw ProcessExecutorError.executableNotFound
