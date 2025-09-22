@@ -333,7 +333,7 @@ struct FrameworkProducer {
                 outputDir: outputDir,
                 buildOptionsMatrix: buildOptionsMatrix
             )
-            return .completed(builtTargets: builtTargets)
+            return .completed(builtTargets: OrderedCollections.OrderedSet(results))
         } catch {
             return .interrupted(builtTargets: builtTargets, error: error)
         }
