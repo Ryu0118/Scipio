@@ -11,6 +11,7 @@ struct FrameworkProducer {
     private let overwrite: Bool
     private let outputDir: URL
     private let fileSystem: any FileSystem
+    private let parallelBuildGroupResolver = ParallelBuildGroupResolver()
 
     private var shouldGenerateVersionFile: Bool {
         // cache is not disabled
@@ -316,17 +317,22 @@ struct FrameworkProducer {
         var builtTargets = OrderedCollections.OrderedSet<CacheSystem.CacheTarget>()
 
         do {
-            var targets = targets
-            while let leafNode = targets.leafs.first {
-                let buildTarget = leafNode.value
-                try await buildXCFrameworks(
-                    buildTarget,
-                    outputDir: outputDir,
-                    buildOptionsMatrix: buildOptionsMatrix
-                )
-                builtTargets.append(buildTarget)
-                targets.remove(buildTarget)
-            }
+//            var targets = targets
+//            while let leafNode = targets.leafs.first {
+//                let buildTarget = leafNode.value
+//                try await buildXCFrameworks(
+//                    buildTarget,
+//                    outputDir: outputDir,
+//                    buildOptionsMatrix: buildOptionsMatrix
+//                )
+//                builtTargets.append(buildTarget)
+//                targets.remove(buildTarget)
+//            }
+            let results = try await buildXCFrameworks(
+                Set(targets.allNodes.map(\.value)),
+                outputDir: outputDir,
+                buildOptionsMatrix: buildOptionsMatrix
+            )
             return .completed(builtTargets: builtTargets)
         } catch {
             return .interrupted(builtTargets: builtTargets, error: error)
@@ -336,6 +342,54 @@ struct FrameworkProducer {
     private enum TargetBuildResult {
         case interrupted(builtTargets: OrderedCollections.OrderedSet<CacheSystem.CacheTarget>, error: any Error)
         case completed(builtTargets: OrderedCollections.OrderedSet<CacheSystem.CacheTarget>)
+    }
+
+    @discardableResult
+    private func buildXCFrameworks(
+        _ targets: Set<CacheSystem.CacheTarget>,
+        outputDir: URL,
+        buildOptionsMatrix: [String: BuildOptions]
+    ) async throws -> Set<CacheSystem.CacheTarget> {
+        let binaryTargets = targets.filter { $0.buildProduct.target.underlying.type == .binary }
+        let regularTargets = targets.filter { $0.buildProduct.target.underlying.type == .regular }
+
+        try await buildXCFrameworksForBinaryTargets(binaryTargets)
+        try await buildXCFrameworksForRegularTargets(regularTargets)
+
+        return binaryTargets.union(regularTargets)
+    }
+
+    private func buildXCFrameworksForRegularTargets(
+        _ regularTargets: Set<CacheSystem.CacheTarget>
+    ) async throws {
+        let compiler = PIFParallelCompiler(
+            descriptionPackage: descriptionPackage,
+            buildOptionsMatrix: buildOptionsMatrix
+        )
+        let parallelBuildGroups = await parallelBuildGroupResolver.resolve(regularTargets)
+        try await compiler.createXCFrameworks(
+            parallelBuildGroups: parallelBuildGroups,
+            outputDirectory: outputDir,
+            overwrite: overwrite
+        )
+    }
+
+    private func buildXCFrameworksForBinaryTargets(
+        _ binaryTargets: some Collection<CacheSystem.CacheTarget>
+    ) async throws {
+        assert(binaryTargets.allSatisfy({ $0.buildProduct.target.underlying.type == .binary }))
+
+        for target in binaryTargets {
+            let product = target.buildProduct
+            let buildOptions = target.buildOptions
+            let binaryExtractor = BinaryExtractor(
+                descriptionPackage: descriptionPackage,
+                outputDirectory: outputDir,
+                fileSystem: fileSystem
+            )
+            try binaryExtractor.extract(of: product.target, overwrite: overwrite)
+            logger.info("✅ Copy \(product.target.c99name).xcframework", metadata: .color(.green))
+        }
     }
 
     @discardableResult

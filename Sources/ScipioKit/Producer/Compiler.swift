@@ -10,6 +10,52 @@ protocol Compiler {
                            overwrite: Bool) async throws
 }
 
+protocol ParallelCompiler {
+    var descriptionPackage: DescriptionPackage { get }
+    
+    func createXCFrameworks(
+        parallelBuildGroups: Set<ParallelBuildGroup>,
+        outputDirectory: URL,
+        overwrite: Bool
+    ) async throws 
+}
+
+extension ParallelCompiler {
+    func extractDebugSymbolPaths(
+        target: ResolvedModule,
+        buildConfiguration: BuildConfiguration,
+        sdks: Set<SDK>,
+        fileSystem: some FileSystem = LocalFileSystem.default
+    ) async throws -> [SDK: [URL]] {
+        let extractor = DwarfExtractor()
+
+        var result = [SDK: [URL]]()
+
+        for sdk in sdks {
+            let dsymPath = descriptionPackage.buildDebugSymbolPath(
+                buildConfiguration: buildConfiguration,
+                sdk: sdk,
+                target: target
+            )
+            guard fileSystem.exists(dsymPath) else { continue }
+
+            let dwarfPath = extractor.dwarfPath(for: target, dSYMPath: dsymPath)
+            let dumpedDSYMsMaps = try await extractor.dump(dwarfPath: dwarfPath)
+            let bcSymbolMapPaths: [URL] = dumpedDSYMsMaps.values.compactMap { [descriptionPackage] uuid in
+                let path = descriptionPackage.productsDirectory(
+                    buildConfiguration: buildConfiguration,
+                    sdk: sdk
+                )
+                    .appending(component: "\(uuid.uuidString).bcsymbolmap")
+                guard fileSystem.exists(path) else { return nil }
+                return path
+            }
+            result[sdk] = [dsymPath] + bcSymbolMapPaths
+        }
+        return result
+    }
+}
+
 extension Compiler {
     func extractDebugSymbolPaths(
         target: ResolvedModule,

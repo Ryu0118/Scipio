@@ -33,6 +33,30 @@ struct XCBuildExecutor {
         ])
         try await executor.run()
     }
+
+    func build(
+        pifPath: URL,
+        configuration: BuildConfiguration,
+        derivedDataPath: URL,
+        buildParametersPath: URL,
+        targets: Set<ResolvedModule>
+    ) async throws {
+        let arguments = [
+            xcbuildPath.path(percentEncoded: false),
+            "build",
+            pifPath.path(percentEncoded: false),
+            "--configuration",
+            configuration.settingsValue,
+            "--derivedDataPath",
+            derivedDataPath.path(percentEncoded: false),
+            "--buildParametersFile",
+            buildParametersPath.path(percentEncoded: false),
+        ] + targets.flatMap { ["--target", $0.name] }
+
+        let executor = await BufferedXCBuildMessageExecutor(arguments)
+
+        try await executor.run()
+    }
 }
 
 private actor BufferedXCBuildMessageExecutor {

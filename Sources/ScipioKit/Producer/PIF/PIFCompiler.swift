@@ -21,7 +21,7 @@ struct PIFCompiler: Compiler {
         self.buildOptionsMatrix = buildOptionsMatrix
         self.fileSystem = fileSystem
         self.executor = executor
-        self.buildParametersGenerator = .init(buildOptions: buildOptions, fileSystem: fileSystem, executor: executor)
+        self.buildParametersGenerator = .init(fileSystem: fileSystem, executor: executor)
     }
 
     private func fetchDefaultToolchainBinPath() async throws -> URL {
@@ -70,6 +70,7 @@ struct PIFCompiler: Compiler {
             let buildParametersPath = try buildParametersGenerator.generate(
                 for: sdk,
                 buildParameters: buildParameters,
+                buildOptions: buildOptions,
                 destinationDir: descriptionPackage.workspaceDirectory
             )
 

@@ -24,7 +24,6 @@ struct XCBBuildParameters: Encodable, Sendable {
 }
 
 struct BuildParametersGenerator {
-    private let buildOptions: BuildOptions
     private let fileSystem: any FileSystem
     private let executor: any Executor
     private let jsonEncoder: JSONEncoder = {
@@ -35,11 +34,9 @@ struct BuildParametersGenerator {
     }()
 
     init(
-        buildOptions: BuildOptions,
         fileSystem: any FileSystem = LocalFileSystem.default,
         executor: some Executor
     ) {
-        self.buildOptions = buildOptions
         self.fileSystem = fileSystem
         self.executor = executor
     }
@@ -47,6 +44,7 @@ struct BuildParametersGenerator {
     func generate(
         for sdk: SDK,
         buildParameters: Parameters,
+        buildOptions: BuildOptions,
         destinationDir: URL
     ) throws -> URL {
         let targetArchitecture = buildParameters.arch
