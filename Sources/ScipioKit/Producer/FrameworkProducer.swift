@@ -333,6 +333,9 @@ struct FrameworkProducer {
                 outputDir: outputDir,
                 buildOptionsMatrix: buildOptionsMatrix
             )
+
+            print("Found targets count: ", results.count)
+            
             return .completed(builtTargets: OrderedCollections.OrderedSet(results))
         } catch {
             return .interrupted(builtTargets: builtTargets, error: error)

@@ -46,7 +46,7 @@ struct PIFParallelCompiler: ParallelCompiler {
         let debugSymbolStripper = DWARFSymbolStripper(executor: executor)
 
         for parallelBuildGroup in parallelBuildGroups {
-            for (sdk, targets) in parallelBuildGroup.buildTargetsBySDK {
+            try await parallelBuildGroup.buildTargetsBySDK.asyncForEach(numberOfConcurrentTasks: 4) { (sdk, targets) in
                 logger.info("📦 Building \(targets.map(\.target.name).joined(separator: ", ")) for \(sdk.displayName)")
 
                 let toolchain = try await makeToolchain(for: sdk)

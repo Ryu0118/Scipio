@@ -1,4 +1,5 @@
 import Foundation
+import ScipioKitCore
 
 struct XCParallelBuildClient {
     enum Error: LocalizedError {
@@ -8,7 +9,6 @@ struct XCParallelBuildClient {
             switch self {
             case .xcbuildNotFound:
                 return "xcbuild not found"
-
             }
         }
     }
@@ -70,7 +70,7 @@ struct XCParallelBuildClient {
         try await executor.build(
             pifPath: pifPath,
             configuration: buildOptions.buildConfiguration,
-            derivedDataPath: packageLocator.derivedDataPath,
+            derivedDataPath: packageLocator.derivedDataPath(for: sdk),
             buildParametersPath: buildParametersPath,
             targets: Set(buildProducts.map(\.target))
         )

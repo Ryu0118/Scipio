@@ -23,6 +23,10 @@ extension PackageLocator {
         workspaceDirectory.appending(component: "ResolvedPackages")
     }
 
+    func derivedDataPath(for sdk: SDK) -> URL {
+        workspaceDirectory.appending(components: "DerivedData", sdk.settingValue)
+    }
+
     func generatedModuleMapPath(of target: ResolvedModule, sdk: SDK) throws -> URL {
         workspaceDirectory
             .appending(components: "ModuleMapsForFramework", sdk.settingValue, target.modulemapName)
@@ -35,7 +39,7 @@ extension PackageLocator {
             buildConfiguration: buildConfiguration,
             sdk: sdk
         )
-        return derivedDataPath.appending(components: "Products", intermediateDirectoryName)
+        return derivedDataPath(for: sdk).appending(components: "Products", intermediateDirectoryName)
     }
 
     /// Returns a directory path which contains assembled frameworks
