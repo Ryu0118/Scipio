@@ -2,6 +2,7 @@ import Foundation
 import PackageManifestKit
 import OrderedCollections
 import AsyncOperations
+import struct UniformTypeIdentifiers.UTType
 
 actor PackageResolver {
     // Because `dump-package` is called for each child dependency, all PackageKinds are mistakenly set to `.root`.
@@ -18,25 +19,55 @@ actor PackageResolver {
     private let dependencyPackagesByID: [DependencyPackage.ID: DependencyPackage]
     private let dependencyPackagesByName: [String: DependencyPackage]
     // URL of the root package directory.
-    private let packageDirectory: URL
+    private let packageLocator: any PackageLocator
     private let rootManifest: Manifest
     private let pins: [Pin.ID: Pin]
+    private let restoredFromCache: Bool
     private let manifestLoader: ManifestLoader
     private let moduleTypeResolver: ModuleTypeResolver
+    private let localCacheSystem: LocalCacheSystem?
     private let fileSystem: any FileSystem
 
     init(
-        packageDirectory: URL,
+        packageLocator: some PackageLocator,
         rootManifest: Manifest,
         fileSystem: some FileSystem,
         executor: some Executor = ProcessExecutor(errorDecoder: StandardOutputDecoder())
     ) async throws {
+        let packageDirectory = packageLocator.packageDirectory
         // Run `swift package resolve` and read Package.resolved
         let packageResolved = try await PackageResolveExecutor(fileSystem: fileSystem, executor: executor).execute(packageDirectory: packageDirectory)
-        // Run `swift package show-dependencies` and parse dependency tree
-        let parseResult = try await ShowDependenciesParser(executor: executor).parse(packageDirectory: packageDirectory)
 
-        self.packageDirectory = packageDirectory
+        // A root package without external dependencies doesn't produce a Package.resolved,
+        // so there's no need to cache it.
+        let localCacheSystem: LocalCacheSystem? =
+            if let originHash = packageResolved?.originHash {
+                LocalCacheSystem(
+                    packageLocator: packageLocator,
+                    fileSystem: fileSystem,
+                    originHash: originHash
+                )
+            } else {
+                nil
+            }
+        self.localCacheSystem = localCacheSystem
+
+        // Run `swift package show-dependencies` and parse dependency tree
+        async let showDependenciesTask = ShowDependenciesParser(executor: executor).parse(packageDirectory: packageDirectory)
+        // If the originHash in Package.resolved matches the originHash of the cached ResolvedPackages, restore the cache
+        async let restoreCacheTask = localCacheSystem?.restore()
+
+        let (parseResult, packageAndModuleCache) = try await (showDependenciesTask, restoreCacheTask)
+
+        if let (allPackages, allModules) = packageAndModuleCache {
+            self.allPackages = allPackages
+            self.allModules = allModules
+            self.restoredFromCache = false
+        } else {
+            self.restoredFromCache = false
+        }
+
+        self.packageLocator = packageLocator
         self.pins = Dictionary(uniqueKeysWithValues: packageResolved?.pins.map { ($0.id, $0) } ?? [])
         self.dependencyPackagesByID = parseResult.dependencyPackagesByID
         self.dependencyPackagesByName = parseResult.dependencyPackagesByName
@@ -52,6 +83,11 @@ actor PackageResolver {
     /// - Returns: Graph containing all resolved packages and modules.
     func resolve() async throws -> ModulesGraph {
         let rootPackage = try await resolve(manifest: rootManifest)
+
+        // If the cache was not restored, we need to create and save a new cache from the freshly resolved packages.
+        if !restoredFromCache {
+            try await localCacheSystem?.cache(Array(allPackages.values))
+        }
 
         return ModulesGraph(
             rootPackage: rootPackage,
@@ -200,7 +236,7 @@ actor PackageResolver {
         product: Product,
         in manifest: PackageManifestKit.Manifest
     ) async throws -> ResolvedProduct {
-        let packageIdentity = resolveDependencyPackage(for: manifest).identity
+        let packageID = resolvePackageID(for: manifest)
 
         return ResolvedProduct(
             underlying: product,
@@ -209,7 +245,7 @@ actor PackageResolver {
                 .filter { shouldBuild($0.type) }
                 .asyncMap(numberOfConcurrentTasks: numberOfConcurrentTasks) { try await self.resolve(target: $0, in: manifest) },
             type: product.type,
-            packageID: PackageID(packageKind: manifest.packageKind, packageIdentity: packageIdentity)
+            packageID: packageID
         )
     }
 
@@ -296,6 +332,11 @@ actor PackageResolver {
     /// Normalizes an optional PackageCondition into an array.
     private func normalizeConditions(_ condition: PackageCondition?) -> [PackageCondition] {
         return condition.map { [$0] } ?? []
+    }
+
+    private func resolvePackageID(for manifest: Manifest) -> PackageID {
+        let packageIdentity = resolveDependencyPackage(for: manifest).identity
+        return PackageID(packageKind: manifest.packageKind, packageIdentity: packageIdentity)
     }
 
     /// Determines the type of a module (e.g., Swift, Clang, binary) for a given target.

@@ -18,6 +18,10 @@ extension PackageLocator {
         workspaceDirectory.appending(component: "DerivedData")
     }
 
+    var resolvedPackagesDirectory: URL {
+        workspaceDirectory.appending(component: "ResolvedPackages")
+    }
+
     func generatedModuleMapPath(of target: ResolvedModule, sdk: SDK) throws -> URL {
         workspaceDirectory
             .appending(components: "ModuleMapsForFramework", sdk.settingValue, target.modulemapName)

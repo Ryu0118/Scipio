@@ -15,7 +15,7 @@ struct ModulesGraph {
     }
 }
 
-struct PackageID: Hashable {
+struct PackageID: Hashable, Codable {
     var description: String
     var packageIdentity: String
 
@@ -38,7 +38,7 @@ struct PackageID: Hashable {
     }
 }
 
-struct ResolvedPackage: Identifiable {
+struct ResolvedPackage: Identifiable, Codable {
     var id: PackageID
     var manifest: Manifest
     var resolvedPackageKind: PackageKind
@@ -81,8 +81,8 @@ extension ResolvedPackage {
     }
 }
 
-struct ResolvedModule: Hashable, Sendable {
-    enum Dependency: Hashable, Identifiable {
+struct ResolvedModule: Hashable, Sendable, Codable {
+    enum Dependency: Hashable, Identifiable, Codable {
         var id: String {
             switch self {
             case .module(let module, _):
@@ -158,7 +158,7 @@ struct ResolvedModule: Hashable, Sendable {
     }
 }
 
-struct ResolvedProduct: Hashable {
+struct ResolvedProduct: Hashable, Codable {
     var underlying: PackageManifestKit.Product
     var modules: [ResolvedModule]
     var type: ProductType
@@ -169,7 +169,7 @@ struct ResolvedProduct: Hashable {
     }
 }
 
-enum ResolvedModuleType: Hashable {
+enum ResolvedModuleType: Hashable, Codable {
     case clang(includeDir: URL, publicHeaders: [URL])
     case binary(BinaryArtifactLocation)
     case swift
@@ -182,7 +182,7 @@ enum ResolvedModuleType: Hashable {
         }
     }
 
-    enum BinaryArtifactLocation: Hashable {
+    enum BinaryArtifactLocation: Hashable, Codable {
         case local(URL)
         case remote(packageIdentity: String, name: String)
 
@@ -200,6 +200,7 @@ enum ResolvedModuleType: Hashable {
 }
 
 struct PackageResolved: Decodable {
+    let originHash: String
     let pins: [Pin]
     let version: Int
 }

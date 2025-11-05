@@ -51,10 +51,14 @@ struct DescriptionPackage: PackageLocator, Sendable {
         self.manifest = try await ScipioKit.ManifestLoader(executor: executor).loadManifest(for: packageDirectory)
 
         self.graph = try await PackageResolver(
-            packageDirectory: packageDirectory,
+            packageLocator: PackageLocation(packageDirectory: packageDirectory),
             rootManifest: self.manifest,
             fileSystem: LocalFileSystem.default
         ).resolve()
+    }
+
+    private struct PackageLocation: PackageLocator {
+        let packageDirectory: URL
     }
 }
 
