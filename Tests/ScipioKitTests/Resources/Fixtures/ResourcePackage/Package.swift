@@ -24,6 +24,8 @@ let package = Package(
                 .copy("Resources/PrivacyInfo.xcprivacy"),
                 .process("Resources/giginet.png"),
                 .process("Resources/AvatarView.xib"),
+                .process("Resources/Media.xcassets"),
+                .process("Resources/Model.xcdatamodeld"),
             ]
         )
     ]

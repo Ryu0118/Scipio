@@ -200,7 +200,7 @@ enum ResolvedModuleType: Hashable, Codable {
 }
 
 struct PackageResolved: Decodable {
-    let originHash: String
+    let originHash: String?
     let pins: [Pin]
     let version: Int
 }
