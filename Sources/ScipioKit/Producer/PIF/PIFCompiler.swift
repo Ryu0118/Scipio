@@ -4,10 +4,10 @@ struct PIFCompiler: Compiler {
     let descriptionPackage: DescriptionPackage
     private let buildOptions: BuildOptions
     private let fileSystem: any FileSystem
-    private let executor: any Executor
+    let executor: any Executor
     private let buildOptionsMatrix: [String: BuildOptions]
 
-    private let buildParametersGenerator: BuildParametersGenerator
+    private let buildCoordinator: PIFBuildCoordinator
 
     init(
         descriptionPackage: DescriptionPackage,
@@ -21,20 +21,12 @@ struct PIFCompiler: Compiler {
         self.buildOptionsMatrix = buildOptionsMatrix
         self.fileSystem = fileSystem
         self.executor = executor
-        self.buildParametersGenerator = .init(fileSystem: fileSystem, executor: executor)
-    }
-
-    private func fetchDefaultToolchainBinPath() async throws -> URL {
-        let result = try await executor.execute("/usr/bin/xcrun", "xcode-select", "-p")
-        let rawString = try result.unwrapOutput().trimmingCharacters(in: .whitespacesAndNewlines)
-        let developerDirPath = URL(filePath: rawString)
-        return developerDirPath.appending(components: "Toolchains", "XcodeDefault.xctoolchain", "usr", "bin")
-    }
-
-    private func makeToolchain(for sdk: SDK) async throws -> UserToolchain {
-        let toolchainDirPath = try await fetchDefaultToolchainBinPath()
-        let toolchainGenerator = ToolchainGenerator(toolchainDirPath: toolchainDirPath)
-        return try await toolchainGenerator.makeToolChain(sdk: sdk)
+        self.buildCoordinator = .init(
+            descriptionPackage: descriptionPackage,
+            buildOptionsMatrix: buildOptionsMatrix,
+            fileSystem: fileSystem,
+            executor: executor
+        )
     }
 
     func createXCFramework(buildProduct: BuildProduct, outputDirectory: URL, overwrite: Bool) async throws {
@@ -52,70 +44,22 @@ struct PIFCompiler: Compiler {
             packageLocator: descriptionPackage
         )
 
-        let debugSymbolStripper = DWARFSymbolStripper(executor: executor)
-
         for sdk in sdks {
-            let toolchain = try await makeToolchain(for: sdk)
-            let buildParameters = await buildParametersGenerator.generate(from: buildOptions, toolchain: toolchain)
-
-            let generator = try PIFGenerator(
-                packageName: descriptionPackage.name,
-                packageLocator: descriptionPackage,
-                allModules: descriptionPackage.graph.allModules,
-                toolchainLibDirectory: buildParameters.toolchain.toolchainLibDir,
+            try await buildCoordinator.executeBuildForSingleTarget(
+                buildProduct: buildProduct,
+                sdk: sdk,
                 buildOptions: buildOptions,
-                buildOptionsMatrix: buildOptionsMatrix
+                xcBuildClient: xcBuildClient
             )
-            let pifPath = try await generator.generateJSON(for: sdk)
-            let buildParametersPath = try buildParametersGenerator.generate(
-                for: sdk,
-                buildParameters: buildParameters,
-                buildOptions: buildOptions,
-                destinationDir: descriptionPackage.workspaceDirectory
-            )
-
-            do {
-                let frameworkBundlePath = try await xcBuildClient.buildFramework(
-                    sdk: sdk,
-                    pifPath: pifPath,
-                    buildParametersPath: buildParametersPath
-                )
-
-                if buildOptions.stripStaticDWARFSymbols && buildOptions.frameworkType == .static {
-                    logger.debug("🐛 Stripping debug symbols of \(target.name) (\(sdk.displayName))")
-                    let binaryPath = frameworkBundlePath.appending(component: buildProduct.target.c99name)
-                    try await debugSymbolStripper.stripDebugSymbol(binaryPath)
-                }
-            } catch {
-                logger.error("Unable to build for \(sdk.displayName)", metadata: .color(.red))
-                logger.error(error)
-            }
         }
 
-        logger.info("🚀 Combining into XCFramework...")
-
-        // If there is existing framework, remove it
-        let frameworkName = target.xcFrameworkName
-        let outputXCFrameworkPath = URL(filePath: outputDirectory.path).appending(component: frameworkName)
-        if fileSystem.exists(outputXCFrameworkPath) && overwrite {
-            logger.info("💥 Delete \(frameworkName)", metadata: .color(.red))
-            try fileSystem.removeFileTree(outputXCFrameworkPath)
-        }
-
-        let debugSymbolPaths: [SDK: [URL]]?
-        if buildOptions.isDebugSymbolsEmbedded {
-            debugSymbolPaths = try await extractDebugSymbolPaths(target: target,
-                                                                 buildConfiguration: buildOptions.buildConfiguration,
-                                                                 sdks: Set(sdks))
-        } else {
-            debugSymbolPaths = nil
-        }
-
-        // Combine all frameworks into one XCFramework
-        try await xcBuildClient.createXCFramework(
-            sdks: Set(buildOptions.sdks),
-            debugSymbols: debugSymbolPaths,
-            outputPath: outputXCFrameworkPath
+        try await buildCoordinator.createXCFramework(
+            buildProduct: buildProduct,
+            buildOptions: buildOptions,
+            sdks: Set(sdks),
+            outputDirectory: outputDirectory,
+            overwrite: overwrite,
+            xcBuildClient: xcBuildClient
         )
     }
 }

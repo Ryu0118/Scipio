@@ -85,7 +85,8 @@ public struct Runner {
             buildOptionsMatrix: buildOptionsMatrix,
             cachePolicies: options.frameworkCachePolicies,
             overwrite: options.overwrite,
-            outputDir: outputDir
+            outputDir: outputDir,
+            enableParallelBuild: options.enableParallelBuild
         )
         do {
             try await producer.produce()
@@ -311,6 +312,7 @@ extension Runner {
         public var resolvedPackagesCachePolicies: [ResolvedPackagesCachePolicy]
         public var overwrite: Bool
         public var verbose: Bool
+        public var enableParallelBuild: Bool
 
         @available(*, deprecated, message: "Use `frameworkCachePolicies` instead.")
         public var cachePolicies: [FrameworkCachePolicy] {
@@ -324,7 +326,8 @@ extension Runner {
             frameworkCachePolicies: [FrameworkCachePolicy] = [.project],
             resolvedPackagesCachePolicies: [ResolvedPackagesCachePolicy] = [.project],
             overwrite: Bool = false,
-            verbose: Bool = false
+            verbose: Bool = false,
+            enableParallelBuild: Bool = true
         ) {
             self.buildOptionsContainer = BuildOptionsContainer(
                 baseBuildOptions: baseBuildOptions,
@@ -335,6 +338,7 @@ extension Runner {
             self.resolvedPackagesCachePolicies = resolvedPackagesCachePolicies
             self.overwrite = overwrite
             self.verbose = verbose
+            self.enableParallelBuild = enableParallelBuild
         }
 
         // swiftlint:disable line_length

@@ -11,6 +11,7 @@ struct FrameworkProducer {
     private let overwrite: Bool
     private let outputDir: URL
     private let fileSystem: any FileSystem
+    private let enableParallelBuild: Bool
     private let parallelBuildGroupResolver = ParallelBuildGroupResolver()
 
     private var shouldGenerateVersionFile: Bool {
@@ -33,6 +34,7 @@ struct FrameworkProducer {
         cachePolicies: [Runner.Options.FrameworkCachePolicy],
         overwrite: Bool,
         outputDir: URL,
+        enableParallelBuild: Bool = true,
         fileSystem: any FileSystem = LocalFileSystem.default
     ) {
         self.descriptionPackage = descriptionPackage
@@ -41,6 +43,7 @@ struct FrameworkProducer {
         self.cachePolicies = cachePolicies
         self.overwrite = overwrite
         self.outputDir = outputDir
+        self.enableParallelBuild = enableParallelBuild
         self.fileSystem = fileSystem
     }
 
@@ -127,13 +130,7 @@ struct FrameworkProducer {
 
         let targetBuildResult = await buildTargets(dependencyGraphToBuild)
 
-        let builtTargets: OrderedCollections.OrderedSet<CacheSystem.CacheTarget> = switch targetBuildResult {
-            case .completed(let builtTargets),
-                 .interrupted(let builtTargets, _):
-                builtTargets
-            }
-
-        await cacheFrameworksIfNeeded(Set(builtTargets), cacheSystem: cacheSystem)
+        await cacheFrameworksIfNeeded(targetBuildResult.builtTargets, cacheSystem: cacheSystem)
 
         if shouldGenerateVersionFile {
             // Versionfiles should be generate for all targets
@@ -314,119 +311,119 @@ struct FrameworkProducer {
     }
 
     private func buildTargets(_ targets: DependencyGraph<CacheSystem.CacheTarget>) async -> TargetBuildResult {
-        var builtTargets = OrderedCollections.OrderedSet<CacheSystem.CacheTarget>()
-
-        do {
-//            var targets = targets
-//            while let leafNode = targets.leafs.first {
-//                let buildTarget = leafNode.value
-//                try await buildXCFrameworks(
-//                    buildTarget,
-//                    outputDir: outputDir,
-//                    buildOptionsMatrix: buildOptionsMatrix
-//                )
-//                builtTargets.append(buildTarget)
-//                targets.remove(buildTarget)
-//            }
-            let results = try await buildXCFrameworks(
+        if enableParallelBuild {
+            await buildAllTargetsInParallel(
                 Set(targets.allNodes.map(\.value)),
                 outputDir: outputDir,
                 buildOptionsMatrix: buildOptionsMatrix
             )
+        } else {
+            await buildTargetsSerially(targets)
+        }
+    }
 
-            print("Found targets count: ", results.count)
-            
-            return .completed(builtTargets: OrderedCollections.OrderedSet(results))
+    private func buildTargetsSerially(_ targets: DependencyGraph<CacheSystem.CacheTarget>) async -> TargetBuildResult {
+        var builtTargets = Set<CacheSystem.CacheTarget>()
+
+        do {
+            var remainingTargets = targets
+            while let leafNode = remainingTargets.leafs.first {
+                let buildTarget = leafNode.value
+                try await buildSingleTargetSerially(buildTarget)
+                builtTargets.insert(buildTarget)
+                remainingTargets.remove(buildTarget)
+            }
+
+            return .completed(builtTargets: builtTargets)
         } catch {
             return .interrupted(builtTargets: builtTargets, error: error)
         }
     }
 
-    private enum TargetBuildResult {
-        case interrupted(builtTargets: OrderedCollections.OrderedSet<CacheSystem.CacheTarget>, error: any Error)
-        case completed(builtTargets: OrderedCollections.OrderedSet<CacheSystem.CacheTarget>)
+    private func buildSingleTargetSerially(_ target: CacheSystem.CacheTarget) async throws {
+        let product = target.buildProduct
+
+        switch product.target.underlying.type {
+        case .regular:
+            try await buildRegularTargetSerially(target)
+        case .binary:
+            try buildBinaryTarget(target)
+        default:
+            fatalError("Unexpected target type \(product.target.underlying.type)")
+        }
+    }
+
+    private func buildRegularTargetSerially(_ target: CacheSystem.CacheTarget) async throws {
+        let compiler = PIFCompiler(
+            descriptionPackage: descriptionPackage,
+            buildOptions: target.buildOptions,
+            buildOptionsMatrix: buildOptionsMatrix
+        )
+        try await compiler.createXCFramework(
+            buildProduct: target.buildProduct,
+            outputDirectory: outputDir,
+            overwrite: overwrite
+        )
+    }
+
+    private func buildBinaryTarget(_ target: CacheSystem.CacheTarget) throws {
+        let binaryExtractor = BinaryExtractor(
+            descriptionPackage: descriptionPackage,
+            outputDirectory: outputDir,
+            fileSystem: fileSystem
+        )
+        try binaryExtractor.extract(of: target.buildProduct.target, overwrite: overwrite)
+        logger.info("✅ Copy \(target.buildProduct.target.c99name).xcframework", metadata: .color(.green))
     }
 
     @discardableResult
-    private func buildXCFrameworks(
+    private func buildAllTargetsInParallel(
         _ targets: Set<CacheSystem.CacheTarget>,
         outputDir: URL,
         buildOptionsMatrix: [String: BuildOptions]
-    ) async throws -> Set<CacheSystem.CacheTarget> {
+    ) async -> TargetBuildResult {
         let binaryTargets = targets.filter { $0.buildProduct.target.underlying.type == .binary }
         let regularTargets = targets.filter { $0.buildProduct.target.underlying.type == .regular }
 
-        try await buildXCFrameworksForBinaryTargets(binaryTargets)
-        try await buildXCFrameworksForRegularTargets(regularTargets)
+        let binaryResult = await buildBinaryTargetsInParallel(binaryTargets)
+        let regularResult = await buildRegularTargetsInParallel(regularTargets)
 
-        return binaryTargets.union(regularTargets)
+        return binaryResult.merge(with: regularResult)
     }
 
-    private func buildXCFrameworksForRegularTargets(
+    private func buildRegularTargetsInParallel(
         _ regularTargets: Set<CacheSystem.CacheTarget>
-    ) async throws {
+    ) async -> TargetBuildResult {
         let compiler = PIFParallelCompiler(
             descriptionPackage: descriptionPackage,
             buildOptionsMatrix: buildOptionsMatrix
         )
         let parallelBuildGroups = await parallelBuildGroupResolver.resolve(regularTargets)
-        try await compiler.createXCFrameworks(
+        return await compiler.createXCFrameworks(
             parallelBuildGroups: parallelBuildGroups,
             outputDirectory: outputDir,
             overwrite: overwrite
         )
     }
 
-    private func buildXCFrameworksForBinaryTargets(
-        _ binaryTargets: some Collection<CacheSystem.CacheTarget>
-    ) async throws {
+    private func buildBinaryTargetsInParallel(
+        _ binaryTargets: Set<CacheSystem.CacheTarget>
+    ) async -> TargetBuildResult {
         assert(binaryTargets.allSatisfy({ $0.buildProduct.target.underlying.type == .binary }))
 
-        for target in binaryTargets {
-            let product = target.buildProduct
-            let buildOptions = target.buildOptions
-            let binaryExtractor = BinaryExtractor(
-                descriptionPackage: descriptionPackage,
-                outputDirectory: outputDir,
-                fileSystem: fileSystem
-            )
-            try binaryExtractor.extract(of: product.target, overwrite: overwrite)
-            logger.info("✅ Copy \(product.target.c99name).xcframework", metadata: .color(.green))
+        var builtTargets = Set<CacheSystem.CacheTarget>()
+
+        do {
+            for target in binaryTargets {
+                try buildBinaryTarget(target)
+                builtTargets.insert(target)
+            }
+
+            return .completed(builtTargets: builtTargets)
+        } catch {
+            logger.warning("⚠️ Failed to extract binary target: \(error.localizedDescription)", metadata: .color(.yellow))
+            return .interrupted(builtTargets: builtTargets, error: error)
         }
-    }
-
-    @discardableResult
-    private func buildXCFrameworks(
-        _ target: CacheSystem.CacheTarget,
-        outputDir: URL,
-        buildOptionsMatrix: [String: BuildOptions]
-    ) async throws -> Set<CacheSystem.CacheTarget> {
-        let product = target.buildProduct
-        let buildOptions = target.buildOptions
-
-        switch product.target.underlying.type {
-        case .regular:
-            let compiler = PIFCompiler(
-                descriptionPackage: descriptionPackage,
-                buildOptions: buildOptions,
-                buildOptionsMatrix: buildOptionsMatrix
-            )
-            try await compiler.createXCFramework(buildProduct: product,
-                                                 outputDirectory: outputDir,
-                                                 overwrite: overwrite)
-        case .binary:
-            let binaryExtractor = BinaryExtractor(
-                descriptionPackage: descriptionPackage,
-                outputDirectory: outputDir,
-                fileSystem: fileSystem
-            )
-            try binaryExtractor.extract(of: product.target, overwrite: overwrite)
-            logger.info("✅ Copy \(product.target.c99name).xcframework", metadata: .color(.green))
-        default:
-            fatalError("Unexpected target type \(product.target.underlying.type)")
-        }
-
-        return []
     }
 
     private func cacheFrameworksIfNeeded(_ targets: Set<CacheSystem.CacheTarget>, cacheSystem: CacheSystem) async {

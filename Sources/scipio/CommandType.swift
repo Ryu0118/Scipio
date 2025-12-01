@@ -58,7 +58,8 @@ extension Runner {
             frameworkCachePolicies: Self.frameworkCachePolicies(from: commandType),
             resolvedPackagesCachePolicies: Self.resolvedPackagesCachePolicies(from: commandType),
             overwrite: buildOptions.overwrite,
-            verbose: globalOptions.verbose
+            verbose: globalOptions.verbose,
+            enableParallelBuild: buildOptions.enableParallelBuild
         )
         self.init(mode: commandType.mode, options: runnerOptions)
     }

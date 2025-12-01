@@ -50,6 +50,11 @@ struct BuildOptionGroup: ParsableArguments {
     @Flag(name: [.customShort("f", allowingJoined: false), .long],
           help: "Whether overwrite generated frameworks or not")
     var overwrite: Bool = false
+
+    @Flag(name: [.customLong("enable-parallel-build")],
+          inversion: .prefixedNo,
+          help: "Whether to use parallel build or not (default: enabled)")
+    var enableParallelBuild: Bool = true
 }
 
 extension FrameworkType: ExpressibleByArgument { }
