@@ -329,7 +329,7 @@ struct FrameworkProducer {
             var remainingTargets = targets
             while let leafNode = remainingTargets.leafs.first {
                 let buildTarget = leafNode.value
-                try await buildSingleTargetSerially(buildTarget)
+                try await buildSingleTarget(buildTarget)
                 builtTargets.insert(buildTarget)
                 remainingTargets.remove(buildTarget)
             }
@@ -340,12 +340,12 @@ struct FrameworkProducer {
         }
     }
 
-    private func buildSingleTargetSerially(_ target: CacheSystem.CacheTarget) async throws {
+    private func buildSingleTarget(_ target: CacheSystem.CacheTarget) async throws {
         let product = target.buildProduct
 
         switch product.target.underlying.type {
         case .regular:
-            try await buildRegularTargetSerially(target)
+            try await buildRegularTarget(target)
         case .binary:
             try buildBinaryTarget(target)
         default:
@@ -353,7 +353,7 @@ struct FrameworkProducer {
         }
     }
 
-    private func buildRegularTargetSerially(_ target: CacheSystem.CacheTarget) async throws {
+    private func buildRegularTarget(_ target: CacheSystem.CacheTarget) async throws {
         let compiler = PIFCompiler(
             descriptionPackage: descriptionPackage,
             buildOptionsMatrix: buildOptionsMatrix
