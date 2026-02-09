@@ -9,4 +9,18 @@ struct ParallelBuildGroup: Hashable {
             partialResult.formUnion(targets)
         }
     }
+
+    func removingTargets(named targetNames: Set<String>) -> ParallelBuildGroup? {
+        let filtered = buildTargetsBySDK.compactMapValues { targets -> Set<BuildProduct>? in
+            let remaining = targets.filter { !targetNames.contains($0.target.name) }
+            return remaining.isEmpty ? nil : remaining
+        }
+
+        guard !filtered.isEmpty else { return nil }
+
+        return ParallelBuildGroup(
+            buildTargetsBySDK: filtered,
+            buildOptions: buildOptions
+        )
+    }
 }
