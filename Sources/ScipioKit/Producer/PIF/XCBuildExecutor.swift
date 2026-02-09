@@ -3,6 +3,28 @@ import Logging
 import Algorithms
 import ScipioKitCore
 
+enum XCBuildError: LocalizedError {
+    case buildFailed(targetNames: Set<String>, errorOutput: String)
+    case partiallyFailed(targetNames: Set<String>)
+
+    var failedTargetNames: Set<String> {
+        switch self {
+        case .buildFailed(let names, _), .partiallyFailed(let names):
+            return names
+        }
+    }
+
+    var errorDescription: String? {
+        let targetList = failedTargetNames.sorted().joined(separator: ", ")
+        switch self {
+        case .buildFailed(_, let errorOutput):
+            return "Build failed for targets: \(targetList)\n\(errorOutput)"
+        case .partiallyFailed:
+            return "Build failed for targets: \(targetList)"
+        }
+    }
+}
+
 struct XCBuildExecutor {
 
     var xcbuildPath: URL
@@ -82,6 +104,7 @@ private actor BufferedXCBuildMessageExecutor {
 
     private var targets: [Int: XCBuildMessage.TargetStartedInfo] = [:]
     private var tasks: [Int: XCBuildMessage.TaskStartedInfo] = [:]
+    private var failedTargetNames: Set<String> = []
 
     func run() async throws {
         precondition(
@@ -97,7 +120,10 @@ private actor BufferedXCBuildMessageExecutor {
             case .executableNotFound, .signalled, .unknownError: throw error
             case .terminated:
                 let output = allMessages.joined(separator: "\n")
-                throw ProcessExecutorError.terminated(errorOutput: output)
+                throw XCBuildError.buildFailed(
+                    targetNames: failedTargetNames,
+                    errorOutput: output
+                )
             }
         } catch {
             throw ProcessExecutorError.unknownError(error)
@@ -169,6 +195,9 @@ private actor BufferedXCBuildMessageExecutor {
             switch info.result {
             case .success: break
             case .failed:
+                if let target {
+                    failedTargetNames.insert(target)
+                }
                 log(level: .error, target: target, task: task.taskID, "failed")
             case .cancelled:
                 log(level: .error, target: target, task: task.taskID, "cancelled")
