@@ -34,12 +34,13 @@ extension PackageLocator {
 
     /// Returns an Products directory path
     /// It should be the default setting of `TARGET_BUILD_DIR`
-    func productsDirectory(buildConfiguration: BuildConfiguration, sdk: SDK) -> URL {
+    func productsDirectory(buildConfiguration: BuildConfiguration, sdk: SDK, isParallelBuild: Bool = true) -> URL {
         let intermediateDirectoryName = productDirectoryName(
             buildConfiguration: buildConfiguration,
             sdk: sdk
         )
-        return derivedDataPath(for: sdk).appending(components: "Products", intermediateDirectoryName)
+        let base = isParallelBuild ? derivedDataPath(for: sdk) : derivedDataPath
+        return base.appending(components: "Products", intermediateDirectoryName)
     }
 
     /// Returns a directory path which contains assembled frameworks

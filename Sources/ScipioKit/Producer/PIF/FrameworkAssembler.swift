@@ -16,13 +16,15 @@ struct FrameworkAssembler {
     func assembleFramework(
         buildProduct: BuildProduct,
         sdk: SDK,
-        buildOptions: BuildOptions
+        buildOptions: BuildOptions,
+        isParallelBuild: Bool
     ) throws -> URL {
         let frameworkComponentsCollector = FrameworkComponentsCollector(
             buildProduct: buildProduct,
             sdk: sdk,
             buildOptions: buildOptions,
             packageLocator: packageLocator,
+            isParallelBuild: isParallelBuild,
             fileSystem: fileSystem
         )
 

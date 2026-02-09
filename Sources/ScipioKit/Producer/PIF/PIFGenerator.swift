@@ -9,6 +9,7 @@ struct PIFGenerator {
     private let toolchainLibDirectory: Foundation.URL
     private let buildOptions: BuildOptions
     private let buildOptionsMatrix: [String: BuildOptions]
+    private let isParallelBuild: Bool
     private let executor: any Executor
     private let fileSystem: any FileSystem
 
@@ -19,6 +20,7 @@ struct PIFGenerator {
         toolchainLibDirectory: Foundation.URL,
         buildOptions: BuildOptions,
         buildOptionsMatrix: [String: BuildOptions],
+        isParallelBuild: Bool,
         executor: some Executor = ProcessExecutor(),
         fileSystem: any FileSystem = LocalFileSystem.default
     ) throws {
@@ -28,6 +30,7 @@ struct PIFGenerator {
         self.toolchainLibDirectory = toolchainLibDirectory
         self.buildOptions = buildOptions
         self.buildOptionsMatrix = buildOptionsMatrix
+        self.isParallelBuild = isParallelBuild
         self.executor = executor
         self.fileSystem = fileSystem
     }
@@ -219,7 +222,8 @@ struct PIFGenerator {
         // Bridging Headers will be generated inside generated frameworks
         let productsDirectory = packageLocator.productsDirectory(
             buildConfiguration: buildOptions.buildConfiguration,
-            sdk: sdk
+            sdk: sdk,
+            isParallelBuild: isParallelBuild
         )
         let bridgingHeaderFullPath = productsDirectory.appending(
             components: "\(target.c99Name).framework", "Headers", "\(target.name)-Swift.h"

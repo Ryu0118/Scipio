@@ -46,6 +46,7 @@ struct FrameworkComponentsCollector {
         sdk: SDK,
         buildOptions: BuildOptions,
         packageLocator: some PackageLocator,
+        isParallelBuild: Bool,
         fileSystem: some FileSystem
     ) {
         self.buildProduct = buildProduct
@@ -56,7 +57,8 @@ struct FrameworkComponentsCollector {
 
         productsDirectory = packageLocator.productsDirectory(
             buildConfiguration: buildOptions.buildConfiguration,
-            sdk: sdk
+            sdk: sdk,
+            isParallelBuild: isParallelBuild
         )
     }
 
