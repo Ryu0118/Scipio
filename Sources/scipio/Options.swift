@@ -52,9 +52,8 @@ struct BuildOptionGroup: ParsableArguments {
     var overwrite: Bool = false
 
     @Flag(name: [.customLong("enable-parallel-build")],
-          inversion: .prefixedNo,
-          help: "Whether to use parallel build or not (default: enabled)")
-    var enableParallelBuild: Bool = true
+          help: "Whether to use parallel build or not")
+    var enableParallelBuild: Bool = false
 }
 
 extension FrameworkType: ExpressibleByArgument { }

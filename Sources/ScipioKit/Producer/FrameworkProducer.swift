@@ -34,7 +34,7 @@ struct FrameworkProducer {
         cachePolicies: [Runner.Options.FrameworkCachePolicy],
         overwrite: Bool,
         outputDir: URL,
-        enableParallelBuild: Bool = true,
+        enableParallelBuild: Bool = false,
         fileSystem: any FileSystem = LocalFileSystem.default
     ) {
         self.descriptionPackage = descriptionPackage

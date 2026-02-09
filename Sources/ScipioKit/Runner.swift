@@ -327,7 +327,7 @@ extension Runner {
             resolvedPackagesCachePolicies: [ResolvedPackagesCachePolicy] = [.project],
             overwrite: Bool = false,
             verbose: Bool = false,
-            enableParallelBuild: Bool = true
+            enableParallelBuild: Bool = false
         ) {
             self.buildOptionsContainer = BuildOptionsContainer(
                 baseBuildOptions: baseBuildOptions,

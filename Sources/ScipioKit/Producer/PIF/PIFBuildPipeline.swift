@@ -21,8 +21,6 @@ struct PIFBuildPipeline {
         self.buildOptionsMatrix = buildOptionsMatrix
     }
 
-    // MARK: - Toolchain methods
-
     private func fetchDefaultToolchainBinPath() async throws -> URL {
         let result = try await executor.execute("/usr/bin/xcrun", "xcode-select", "-p")
         let rawString = try result.unwrapOutput().trimmingCharacters(in: .whitespacesAndNewlines)
@@ -35,8 +33,6 @@ struct PIFBuildPipeline {
         let toolchainGenerator = ToolchainGenerator(toolchainDirPath: toolchainDirPath)
         return try await toolchainGenerator.makeToolChain(sdk: sdk)
     }
-
-    // MARK: - Build execution
 
     /// Execute complete build flow for single target
     func executeBuildForSingleTarget(
@@ -140,8 +136,6 @@ struct PIFBuildPipeline {
         }
     }
 
-    // MARK: - XCFramework creation
-
     func createXCFramework(
         buildProduct: BuildProduct,
         buildOptions: BuildOptions,
@@ -172,8 +166,6 @@ struct PIFBuildPipeline {
             outputPath: outputXCFrameworkPath
         )
     }
-
-    // MARK: - Helper methods
 
     private func cleanupExistingXCFramework(at path: URL, overwrite: Bool) throws {
         if fileSystem.exists(path) && overwrite {
