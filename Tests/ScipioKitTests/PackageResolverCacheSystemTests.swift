@@ -10,6 +10,7 @@ package let packageURL = URL(filePath: #filePath)
 private let packageLocation = PackageLocation(packageDirectory: packageURL)
 private let fileSystem: LocalFileSystem = .default
 
+@Suite(.serialized)
 struct PackageResolverCacheSystemTests {
     @Test(
         "Caches resolved packages to cache storages",

@@ -14,7 +14,7 @@ struct PartialCacheTests {
     private let frameworkOutputDir: URL
 
     init() throws {
-        tempDir = fileManager.temporaryDirectory
+        tempDir = fileManager.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         frameworkOutputDir = tempDir.appendingPathComponent("XCFrameworks")
         try fileManager.createDirectory(at: frameworkOutputDir, withIntermediateDirectories: true)
     }
@@ -38,18 +38,20 @@ struct PartialCacheTests {
             Issue.record("The runner must raise an error.")
         } catch {
             guard case let .compilerError(details) = error as? Runner.Error,
-                  case .terminated = details as? ProcessExecutorError else {
+                  let xcBuildError = details as? XCBuildError else {
                 Issue.record("Unexpected error occurred.")
                 return
             }
+            #expect(xcBuildError.failedTargetNames.contains("Bad"))
 
             let baseLibraryPath = frameworkOutputDir.appendingPathComponent("Base.xcframework")
             #expect(fileManager.fileExists(atPath: baseLibraryPath.path))
 
+            let goodLibraryPath = frameworkOutputDir.appendingPathComponent("Good.xcframework")
+            #expect(fileManager.fileExists(atPath: goodLibraryPath.path))
+
             let badLibraryPath = frameworkOutputDir.appendingPathComponent("Bad.xcframework")
             #expect(!fileManager.fileExists(atPath: badLibraryPath.path))
-
-            try fileManager.removeItem(atPath: baseLibraryPath.path)
         }
     }
 }

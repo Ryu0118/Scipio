@@ -31,7 +31,7 @@ final class IntegrationTests: XCTestCase {
         case watchOS = "watchos-arm64_arm64_32_armv7k"
     }
 
-    func testMajorPackages() async throws {
+    func testMajorPackagesWithParallelBuild() async throws {
         try await testBuildPackages(
             packageName: "IntegrationTestPackage",
             buildOptionsMatrix: [
@@ -62,11 +62,12 @@ final class IntegrationTests: XCTestCase {
                 ("CNIOWASI", .static, [.iOS], true),
                 ("InternalCollectionsUtilities", .static, [.iOS], false),
                 ("_NIOBase64", .static, [.iOS], false),
-            ]
+            ],
+            enableParallelBuild: true
         )
     }
 
-    func testMajorMacPackages() async throws {
+    func testMajorMacPackagesWithSerialBuild() async throws {
         try await testBuildPackages(
             packageName: "IntegrationMacTestPackage",
             buildOptionsMatrix: [:],
@@ -91,11 +92,12 @@ final class IntegrationTests: XCTestCase {
                 ("CNIOWASI", .static, [.macOS], true),
                 ("InternalCollectionsUtilities", .static, [.macOS], false),
                 ("_NIOBase64", .static, [.macOS], false),
-            ]
+            ],
+            enableParallelBuild: false
         )
     }
 
-    func testDynamicFramework() async throws {
+    func testDynamicFrameworkWithParallelBuild() async throws {
         try await testBuildPackages(
             packageName: "DynamicFrameworkOtherLDFlagsTestPackage",
             buildOptionsMatrix: [
@@ -106,7 +108,8 @@ final class IntegrationTests: XCTestCase {
                 ("ClangModule", .static, [.iOS, .macOS], true),
                 ("ClangModuleForIOS", .static, [.iOS, .macOS], true),
                 ("ClangModuleForMacOS", .static, [.iOS, .macOS], true),
-            ]
+            ],
+            enableParallelBuild: true
         )
     }
 
@@ -115,7 +118,8 @@ final class IntegrationTests: XCTestCase {
     private func testBuildPackages(
         packageName: String,
         buildOptionsMatrix: [String: Runner.Options.TargetBuildOptions],
-        testCases: [TestCase]
+        testCases: [TestCase],
+        enableParallelBuild: Bool
     ) async throws {
         let runner = Runner(
             mode: .prepareDependencies,
@@ -131,7 +135,8 @@ final class IntegrationTests: XCTestCase {
                 shouldOnlyUseVersionsFromResolvedFile: true,
                 frameworkCachePolicies: .disabled,
                 overwrite: true,
-                verbose: false
+                verbose: false,
+                enableParallelBuild: enableParallelBuild
             )
         )
         let outputDir = fileManager.temporaryDirectory
