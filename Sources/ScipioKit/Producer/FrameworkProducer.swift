@@ -356,11 +356,11 @@ struct FrameworkProducer {
     private func buildRegularTargetSerially(_ target: CacheSystem.CacheTarget) async throws {
         let compiler = PIFCompiler(
             descriptionPackage: descriptionPackage,
-            buildOptions: target.buildOptions,
             buildOptionsMatrix: buildOptionsMatrix
         )
         try await compiler.createXCFramework(
             buildProduct: target.buildProduct,
+            buildOptions: target.buildOptions,
             outputDirectory: outputDir,
             overwrite: overwrite
         )
@@ -385,7 +385,7 @@ struct FrameworkProducer {
         let binaryTargets = targets.filter { $0.buildProduct.target.underlying.type == .binary }
         let regularTargets = targets.filter { $0.buildProduct.target.underlying.type == .regular }
 
-        let binaryResult = await buildBinaryTargetsInParallel(binaryTargets)
+        let binaryResult = await buildBinaryTargets(binaryTargets)
         let regularResult = await buildRegularTargetsInParallel(regularTargets)
 
         return binaryResult.merge(with: regularResult)
@@ -394,7 +394,7 @@ struct FrameworkProducer {
     private func buildRegularTargetsInParallel(
         _ regularTargets: Set<CacheSystem.CacheTarget>
     ) async -> TargetBuildResult {
-        let compiler = PIFParallelCompiler(
+        let compiler = PIFCompiler(
             descriptionPackage: descriptionPackage,
             buildOptionsMatrix: buildOptionsMatrix
         )
@@ -406,7 +406,7 @@ struct FrameworkProducer {
         )
     }
 
-    private func buildBinaryTargetsInParallel(
+    private func buildBinaryTargets(
         _ binaryTargets: Set<CacheSystem.CacheTarget>
     ) async -> TargetBuildResult {
         assert(binaryTargets.allSatisfy({ $0.buildProduct.target.underlying.type == .binary }))

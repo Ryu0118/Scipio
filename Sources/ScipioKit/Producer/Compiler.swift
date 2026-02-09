@@ -7,8 +7,15 @@ protocol Compiler {
     var descriptionPackage: DescriptionPackage { get }
 
     func createXCFramework(buildProduct: BuildProduct,
+                           buildOptions: BuildOptions,
                            outputDirectory: URL,
                            overwrite: Bool) async throws
+
+    func createXCFrameworks(
+        parallelBuildGroups: Set<ParallelBuildGroup>,
+        outputDirectory: URL,
+        overwrite: Bool
+    ) async -> TargetBuildResult
 }
 
 enum TargetBuildResult {
@@ -38,98 +45,5 @@ enum TargetBuildResult {
         }
 
         return .completed(builtTargets: allBuiltTargets)
-    }
-}
-
-protocol ParallelCompiler {
-    var descriptionPackage: DescriptionPackage { get }
-
-    func createXCFrameworks(
-        parallelBuildGroups: Set<ParallelBuildGroup>,
-        outputDirectory: URL,
-        overwrite: Bool
-    ) async -> TargetBuildResult
-}
-
-extension ParallelCompiler {
-    func extractDebugSymbolPaths(
-        target: ResolvedModule,
-        buildConfiguration: BuildConfiguration,
-        sdks: Set<SDK>,
-        fileSystem: some FileSystem = LocalFileSystem.default
-    ) async throws -> [SDK: [URL]] {
-        let extractor = DwarfExtractor()
-
-        var result = [SDK: [URL]]()
-
-        for sdk in sdks {
-            let dsymPath = descriptionPackage.buildDebugSymbolPath(
-                buildConfiguration: buildConfiguration,
-                sdk: sdk,
-                target: target
-            )
-            guard fileSystem.exists(dsymPath) else { continue }
-
-            let dwarfPath = extractor.dwarfPath(for: target, dSYMPath: dsymPath)
-            let dumpedDSYMsMaps = try await extractor.dump(dwarfPath: dwarfPath)
-            let bcSymbolMapPaths: [URL] = dumpedDSYMsMaps.values.compactMap { [descriptionPackage] uuid in
-                let path = descriptionPackage.productsDirectory(
-                    buildConfiguration: buildConfiguration,
-                    sdk: sdk
-                )
-                    .appending(component: "\(uuid.uuidString).bcsymbolmap")
-                guard fileSystem.exists(path) else { return nil }
-                return path
-            }
-            result[sdk] = [dsymPath] + bcSymbolMapPaths
-        }
-        return result
-    }
-}
-
-extension Compiler {
-    func extractDebugSymbolPaths(
-        target: ResolvedModule,
-        buildConfiguration: BuildConfiguration,
-        sdks: Set<SDK>,
-        fileSystem: some FileSystem = LocalFileSystem.default
-    ) async throws -> [SDK: [URL]] {
-        let extractor = DwarfExtractor()
-
-        var result = [SDK: [URL]]()
-
-        for sdk in sdks {
-            let dsymPath = descriptionPackage.buildDebugSymbolPath(
-                buildConfiguration: buildConfiguration,
-                sdk: sdk,
-                target: target
-            )
-            guard fileSystem.exists(dsymPath) else { continue }
-
-            let dwarfPath = extractor.dwarfPath(for: target, dSYMPath: dsymPath)
-            let dumpedDSYMsMaps = try await extractor.dump(dwarfPath: dwarfPath)
-            let bcSymbolMapPaths: [URL] = dumpedDSYMsMaps.values.compactMap { [descriptionPackage] uuid in
-                let path = descriptionPackage.productsDirectory(
-                    buildConfiguration: buildConfiguration,
-                    sdk: sdk
-                )
-                    .appending(component: "\(uuid.uuidString).bcsymbolmap")
-                guard fileSystem.exists(path) else { return nil }
-                return path
-            }
-            result[sdk] = [dsymPath] + bcSymbolMapPaths
-        }
-        return result
-    }
-}
-
-extension DescriptionPackage {
-    fileprivate func buildDebugSymbolPath(
-        buildConfiguration: BuildConfiguration,
-        sdk: SDK,
-        target: ResolvedModule
-    ) -> URL {
-        productsDirectory(buildConfiguration: buildConfiguration, sdk: sdk)
-            .appending(component: "\(target.name).framework.dSYM")
     }
 }
